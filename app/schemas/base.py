@@ -1,4 +1,10 @@
-from pydantic import BaseModel, ConfigDict
+from typing import Annotated, Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.core.constants import MAX_ENTITY_ID
+
+ResourceId = Annotated[int, Field(gt=0, le=MAX_ENTITY_ID)]
 
 
 class BaseSchema(BaseModel):
@@ -10,4 +16,4 @@ class BaseSchema(BaseModel):
 
 
 class ErrorResponse(BaseSchema):
-    detail: str
+    detail: str | list[dict[str, Any]]

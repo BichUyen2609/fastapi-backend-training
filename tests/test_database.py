@@ -1,4 +1,3 @@
-from collections.abc import AsyncIterator
 from datetime import timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -7,12 +6,9 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import Connection, String, inspect, select, text
-from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
-from sqlalchemy.pool import NullPool
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
-from app.core.config import get_settings
 from app.core.constants import DESCRIPTION_MAX_LENGTH, TITLE_MAX_LENGTH
 from app.core.enums import TaskPriority, TaskStatus
 from app.core.security import hash_password, verify_password
@@ -31,68 +27,10 @@ from app.schemas.task import TaskCreate
 pytestmark = pytest.mark.anyio
 
 
-@pytest.fixture
-def anyio_backend() -> str:
-    return "asyncio"
-
-
-@pytest.fixture
-async def database_engine() -> AsyncIterator[AsyncEngine]:
-    settings = get_settings()
-    assert settings.test_database_url is not None, "Set TEST_DATABASE_URL"
-    test_url = str(settings.test_database_url)
-    assert make_url(test_url).database != make_url(str(settings.database_url)).database
-    assert (make_url(test_url).database or "").endswith("_test")
-    engine = create_async_engine(test_url, poolclass=NullPool)
-    try:
-        yield engine
-    finally:
-        await engine.dispose()
-
-
 def migration_config(connection: Connection) -> Config:
     config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
     config.attributes["connection"] = connection
     return config
-
-
-@pytest.fixture
-async def db_session(database_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
-    async with database_engine.connect() as connection:
-        await connection.run_sync(
-            lambda sync_connection: command.upgrade(
-                migration_config(sync_connection), "head"
-            )
-        )
-        await connection.commit()
-        transaction = await connection.begin()
-        try:
-            async with AsyncSession(
-                bind=connection,
-                expire_on_commit=False,
-                join_transaction_mode="create_savepoint",
-            ) as session:
-                yield session
-        finally:
-            await transaction.rollback()
-
-
-@pytest.fixture
-async def project(db_session: AsyncSession) -> Project:
-    user = User(
-        email=f"{uuid4().hex}@example.test",
-        full_name="Owner",
-        hashed_password=hash_password("test_password_only"),
-    )
-    db_session.add(user)
-    await db_session.flush()
-    workspace = Workspace(name="Test workspace", owner_id=user.id)
-    db_session.add(workspace)
-    await db_session.flush()
-    project = Project(name="Test project", workspace_id=workspace.id)
-    db_session.add(project)
-    await db_session.flush()
-    return project
 
 
 async def test_migration_round_trip_and_model_metadata_match(

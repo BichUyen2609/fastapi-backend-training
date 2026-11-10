@@ -1,53 +1,22 @@
-from dataclasses import replace
-from datetime import UTC, datetime
-from threading import Lock
-from typing import Protocol
-from uuid import UUID
+from sqlalchemy import exists, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.task import Task, TaskChanges
+from app.models.entities import Project, Task, User
+from app.repositories.base import BaseRepository
 
 
-class TaskRepository(Protocol):
-    def list_tasks(self) -> list[Task]: ...
+class TaskRepository(BaseRepository[Task]):
+    def __init__(self, session: AsyncSession) -> None:
+        super().__init__(session, Task)
 
-    def get_task(self, task_id: UUID) -> Task | None: ...
+    async def project_exists(self, project_id: int) -> bool:
+        return (
+            await self.session.scalar(select(exists().where(Project.id == project_id)))
+            is True
+        )
 
-    def add_task(self, task: Task) -> Task: ...
-
-    def update_task(self, task_id: UUID, changes: TaskChanges) -> Task | None: ...
-
-    def delete_task(self, task_id: UUID) -> bool: ...
-
-
-class InMemoryTaskRepository:
-    """Per-application storage; mutations are atomic across worker threads."""
-
-    def __init__(self) -> None:
-        self._tasks: dict[UUID, Task] = {}
-        self._lock = Lock()
-
-    def list_tasks(self) -> list[Task]:
-        with self._lock:
-            return list(self._tasks.values())
-
-    def get_task(self, task_id: UUID) -> Task | None:
-        with self._lock:
-            return self._tasks.get(task_id)
-
-    def add_task(self, task: Task) -> Task:
-        with self._lock:
-            self._tasks[task.id] = task
-            return task
-
-    def update_task(self, task_id: UUID, changes: TaskChanges) -> Task | None:
-        with self._lock:
-            task = self._tasks.get(task_id)
-            if task is None or not changes:
-                return task
-            updated_task = replace(task, **changes, updated_at=datetime.now(UTC))
-            self._tasks[task_id] = updated_task
-            return updated_task
-
-    def delete_task(self, task_id: UUID) -> bool:
-        with self._lock:
-            return self._tasks.pop(task_id, None) is not None
+    async def user_exists(self, user_id: int) -> bool:
+        return (
+            await self.session.scalar(select(exists().where(User.id == user_id)))
+            is True
+        )

@@ -1,180 +1,182 @@
-# TaskHub — FastAPI Backend Training
+# TaskHub — Ngày 2: SQLAlchemy async và Alembic
 
-Day 2 được chia thành hai PR: database/model/migration, sau đó async CRUD và
-phân trang. Phần database định nghĩa đủ 8 bảng của sample app: users, workspaces,
-workspace_members, projects, tasks, labels, task_labels, comments. API Day 1 được
-giữ nguyên trong PR database; PR tiếp theo chuyển API sang SQLAlchemy async.
+Backend quản lý công việc dùng FastAPI, Pydantic v2, SQLAlchemy 2.x async và
+PostgreSQL 16. Day 2 bổ sung model, relationship, migration, repository CRUD async
+và phân trang vào ứng dụng Day 1.
 
-## Database và migration
+## Cài đặt và chạy
 
-```powershell
-Copy-Item .env.example .env
-docker compose up -d db
-docker compose exec db createdb -U taskhub taskhub_test
-.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv\Scripts\python.exe -m alembic upgrade head
-.\.venv\Scripts\python.exe -m alembic check
-.\.venv\Scripts\python.exe -m app.seed
-```
-
-Các giá trị mật khẩu trong `.env.example` chỉ là dữ liệu mẫu cho local. Config đọc
-qua `Settings`; code không có credential mặc định. `requirements.txt` là nguồn
-khai báo dependency runtime, `pyproject.toml` đọc trực tiếp từ file này.
-
-Model ORM nằm trong `app/models/entities.py`, enum ở `app/core/enums.py`, cấu hình
-session ở `app/database.py`. Mỗi request sẽ có session riêng với
-`expire_on_commit=False`. Timestamps dùng `TIMESTAMP WITH TIME ZONE` và được đọc
-về UTC. Enum dùng CHECK constraint (`native_enum=False`, `create_constraint=True`),
-nên downgrade không để lại PostgreSQL enum type. Các cột có default dùng
-`server_default`; độ dài chuỗi dùng constants chung cho schema, model và migration.
-
-Workspace/project/task dùng CASCADE cho dữ liệu con; xóa assignee đặt
-`assignee_id=NULL`; xóa owner/creator/author còn dữ liệu tham chiếu bị RESTRICT.
-Relationship cấu hình `passive_deletes` và `lazy="raise"` để tránh ghi FK null hoặc
-phát sinh lazy query ngoài ý muốn trong async. FK dùng để filter/join có index;
-hai bảng liên kết có thêm index cho cột không đứng đầu khóa chính ghép.
-
-`python -m app.seed` tạo user đã hash mật khẩu bằng Argon2, workspace, membership
-OWNER và project trong cùng transaction. Chạy lại không tạo demo trùng. Lệnh log
-`user_id` và `project_id` thực tế để dùng khi thử API ở PR tích hợp.
-
-Test database chỉ nhận `TEST_DATABASE_URL` có tên DB kết thúc bằng `_test` và khác
-DB dev. Mỗi test mở transaction riêng và rollback khi kết thúc. Kiểm thử migration
-chạy upgrade/downgrade/upgrade trong schema tạm của DB test, không thay schema dev.
-Test dùng PostgreSQL thật; không thay bằng SQLite hoặc tắt kiểm tra foreign key.
-
-## Day 1: Core Setup & CRUD
-
-Skeleton API quản lý công việc theo layered architecture, dùng FastAPI và Pydantic v2.
-Phạm vi Day 1: app instance, APIRouter, lifespan, dependency injection và CRUD cho
-một resource `Task`.
-
-## Chạy local
-
-Yêu cầu Python 3.11 trở lên. Chạy trong thư mục project:
+Yêu cầu Python 3.11+ và PostgreSQL 16. Có thể dùng Docker Compose để chạy DB:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+Copy-Item .env.example .env
+docker compose up -d --wait db
+docker compose exec db createdb -U taskhub taskhub_test
+.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m alembic check
+.\.venv\Scripts\python.exe -m app.seed
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
 ```
 
-Linux/macOS: thay `.\.venv\Scripts\python.exe` bằng `.venv/bin/python`.
+Chỉ cần tạo `taskhub_test` một lần. Nếu dùng PostgreSQL đã cài sẵn, tạo hai DB riêng
+`taskhub` và `taskhub_test`, rồi cập nhật hai URL trong `.env`. Trên Linux/macOS,
+thay `.\.venv\Scripts\python.exe` bằng `.venv/bin/python`.
 
 - Swagger UI: <http://127.0.0.1:8000/docs>
 - ReDoc: <http://127.0.0.1:8000/redoc>
 - OpenAPI: <http://127.0.0.1:8000/openapi.json>
 
-Repository hiện lưu dữ liệu trong bộ nhớ của từng app instance. Restart sẽ mất
-dữ liệu; chạy một worker. SQLAlchemy async, Alembic, database, auth/RBAC, Redis và
-Docker Compose thuộc các session tiếp theo, chưa nằm trong bản Day 1 này.
+Các mật khẩu trong `.env.example` là dữ liệu mẫu cho local. Credential thực chỉ
+đặt trong `.env`, file này đã được Git ignore. Config đọc tập trung qua
+`pydantic-settings`; code không có credential mặc định. `DATABASE_ECHO` điều khiển
+SQL logging. `requirements.txt` lưu UTF-8 không BOM và là nguồn dependency runtime
+duy nhất; `pyproject.toml` đọc trực tiếp từ file này.
+
+`app.seed` hash mật khẩu demo bằng Argon2 trước khi lưu và tạo user, workspace,
+membership OWNER, project trong cùng transaction. Chạy lại không tạo demo trùng.
+Lệnh log `user_id` và `project_id` thực tế để dùng khi gọi API.
 
 ## Cấu trúc
 
 ```text
 app/
-├── main.py                 # App factory, lifespan, exception handler
+├── main.py
+├── database.py
+├── seed.py
 ├── api/
-│   ├── dependencies.py     # Wiring repository → service bằng Depends
-│   └── v1/tasks.py         # HTTP endpoints, status code, response schemas
+│   ├── dependencies.py
+│   └── v1/tasks.py
 ├── core/
-│   ├── constants.py        # Giới hạn và thông báo dùng chung
-│   └── exceptions.py       # Exception nghiệp vụ, không phụ thuộc HTTP
-├── models/task.py          # Dataclass Task, enums, kiểu dữ liệu cập nhật
+│   ├── config.py
+│   ├── constants.py
+│   ├── enums.py
+│   ├── exceptions.py
+│   └── security.py
+├── models/entities.py
+├── repositories/
+│   ├── base.py
+│   └── task.py
 ├── schemas/
-│   ├── base.py             # ConfigDict dùng chung
-│   └── task.py             # TaskCreate / TaskUpdate / TaskResponse
-├── repositories/task.py    # Protocol và implementation in-memory
-└── services/task.py        # Use cases, chỉ dùng self.repository
-tests/                      # API, validation, DI, isolation, OpenAPI
+│   ├── base.py
+│   └── task.py
+└── services/task.py
+migrations/
+├── env.py
+├── script.py.mako
+└── versions/0001_create_taskhub_schema.py
+tests/
 ```
 
-Request đi qua `router → service → repository`. Repository chỉ lưu model nội bộ
-`Task`, không lưu `TaskResponse`. Model bất biến giúp tránh sửa dữ liệu ngoài
-repository; lock bảo vệ từng thao tác đọc/ghi và cập nhật từng phần một cách atomic.
-Repository được khởi tạo trong lifespan cho từng app, không dùng singleton global.
-Có thể thay implementation qua `get_task_repository` và `app.dependency_overrides`.
+Luồng request: router → service → repository → database. `BaseRepository[T]` cung
+cấp get/create/update/delete/paginate; `TaskRepository` bổ sung truy vấn tham chiếu.
+Repository chỉ flush, không commit. Service quản lý transaction và refresh sau
+commit; mỗi request có `AsyncSession` riêng với `expire_on_commit=False`.
 
-## API
+Lifespan kiểm tra kết nối và đóng engine khi ứng dụng dừng. Không tự tạo bảng khi
+startup; schema được quản lý bằng Alembic. Router, service và repository đều
+`async`/`await`; ORM model được tách khỏi các schema request/response.
 
-| Method | Endpoint | Thành công |
+## Model và migration
+
+Định nghĩa đủ 8 bảng: `users`, `workspaces`, `workspace_members`, `projects`,
+`tasks`, `labels`, `task_labels`, `comments`. Enum đặt trong `core/enums.py`; giới
+hạn chuỗi dùng chung từ `constants.py` cho model, schema và migration.
+
+Enum dùng `native_enum=False` và `create_constraint=True`, để DB từ chối giá trị
+lạ bằng CHECK constraint. Không tạo PostgreSQL enum type nên downgrade không để
+lại type rác. Cột có giá trị mặc định dùng `server_default` để insert SQL trực
+tiếp vẫn hợp lệ. Timestamp dùng `TIMESTAMP WITH TIME ZONE`, đọc về UTC.
+
+| Quan hệ | Khi xóa bản ghi cha |
+| --- | --- |
+| Workspace → project/membership | CASCADE |
+| Project → task/label | CASCADE |
+| Task → comment/task-label | CASCADE |
+| User → task được assign | SET NULL |
+| User → workspace sở hữu/task đã tạo/comment đã viết | RESTRICT |
+
+Relationship dùng `passive_deletes` phù hợp với FK và `lazy="raise"` để tránh
+query ngầm trong async. FK dùng để filter/join có index; bảng liên kết có index
+cho `label_id` và `user_id`, bên cạnh khóa chính ghép.
+
+Migration ban đầu được autogenerate từ model và đã rà lại. Khi thay model:
+
+```powershell
+.\.venv\Scripts\python.exe -m alembic revision --autogenerate -m "describe schema change"
+.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m alembic check
+```
+
+## API Task
+
+| Method | Endpoint | Kết quả |
 | --- | --- | --- |
-| POST | `/api/v1/tasks` | 201, task mới và header `Location` |
-| GET | `/api/v1/tasks` | 200, danh sách task |
-| GET | `/api/v1/tasks/{task_id}` | 200, chi tiết task |
-| PATCH | `/api/v1/tasks/{task_id}` | 200, task sau cập nhật |
+| POST | `/api/v1/tasks` | 201 và header Location |
+| GET | `/api/v1/tasks?page=1&limit=20` | 200, danh sách phân trang |
+| GET | `/api/v1/projects/{project_id}/tasks` | 200, task trong project |
+| GET | `/api/v1/tasks/{task_id}` | 200, chi tiết |
+| PATCH | `/api/v1/tasks/{task_id}` | 200, cập nhật từng phần |
 | DELETE | `/api/v1/tasks/{task_id}` | 204, body rỗng |
 
-`task_id` là UUID. Task có `title`, `description`, `status`, `priority`, `due_date`,
-`created_at`, `updated_at`. ID và timestamp do server tạo; timestamp dùng UTC.
+ID chuyển từ UUID của bản in-memory Day 1 sang số nguyên dương do DB sinh.
+POST bắt buộc `title`, `project_id`, `created_by`. Các FK phải tồn tại; ID âm,
+bằng 0 hoặc vượt giới hạn kiểu dữ liệu bị từ chối trước khi query DB.
+
+Ví dụ trên DB mới, sau khi chạy seed; dùng ID thực tế trong log nếu DB đã có dữ liệu:
 
 ```json
 {
-  "title": "Hoàn thành Day 1",
-  "description": "Core setup và CRUD",
-  "status": "TODO",
-  "priority": "MEDIUM",
+  "project_id": 1,
+  "created_by": 1,
+  "title": "Hoàn thành Day 2",
+  "priority": "HIGH",
   "due_date": "2027-01-15"
 }
 ```
 
-POST chỉ bắt buộc `title`. `status` mặc định `TODO`, nhận
-`TODO / IN_PROGRESS / IN_REVIEW / DONE`; `priority` mặc định `MEDIUM`, nhận
-`LOW / MEDIUM / HIGH / URGENT`. `due_date` là ngày theo định dạng `YYYY-MM-DD`.
+List trả `items`, `total`, `page`, `limit`. `total` là tổng kết quả trước khi phân
+trang; mặc định page=1, limit=20, tối đa 100. Có thể lọc `/tasks` theo `project_id`.
+Thứ tự ổn định theo `created_at DESC, id DESC`, có tie-breaker khi timestamp bằng nhau.
 
-## Validation và PATCH
+PATCH dùng `exclude_unset=True`: bỏ qua field thì giữ nguyên; `description`,
+`due_date`, `assignee_id` nhận null để xóa giá trị. `title`, `status`, `priority`,
+`project_id` không nhận null. Title trim khoảng trắng và dài 1–200 ký tự;
+description tối đa 5.000 ký tự, khớp `String(5000)` trong DB. Field lạ và các field
+do server quản lý bị từ chối. `{}` không thay đổi task hay `updated_at`.
 
-- `title`: trim khoảng trắng, dài 1–200 ký tự sau trim; chuỗi toàn khoảng trắng bị từ chối.
-- `description`: trim khoảng trắng, tối đa 5.000 ký tự; cho phép `null`.
-- `due_date`: cho phép `null` để xóa hạn công việc.
-- `title`, `status`, `priority`: không nhận `null`, cả POST lẫn PATCH.
-- Field không khai báo hoặc field do server quản lý: trả 422.
-- Validation chạy trước khi gọi service, nên request không hợp lệ không ghi một phần dữ liệu.
+UPDATE chỉ ghi các cột client gửi, tránh ghi đè field khác từ snapshot cũ khi có
+PATCH đồng thời. ID và `created_at` bất biến; `created_by` không sửa qua PATCH.
 
-| PATCH body | Kết quả |
-| --- | --- |
-| `{"status": "DONE"}` | Chỉ đổi status, giữ các field còn lại |
-| `{"description": null}` | Xóa description |
-| `{"due_date": null}` | Xóa due_date |
-| `{"title": null}` | 422, giữ nguyên task; GET tiếp tục trả 200 |
-| `{"title": "   "}` | 422, giữ nguyên task |
-| `{}` | 200, không thay đổi dữ liệu hoặc updated_at |
+Domain exception được handler tập trung chuyển thành 404 khi không tìm thấy,
+422 khi tham chiếu đầu vào không hợp lệ, 409 khi xung đột FK/unique lúc ghi DB.
+Transaction lỗi được rollback; API không lộ chi tiết SQL. Swagger/ReDoc mô tả
+các response 404/409/422 và hai dạng detail của lỗi domain/validation.
 
-`exclude_unset=True` chỉ bỏ field không được gửi, vẫn giữ `null` được gửi tường minh.
-Vì vậy `TaskUpdate` dùng `field_validator` để chặn null cho các field không nullable.
-`SkipJsonSchema` giúp OpenAPI không quảng bá null là giá trị hợp lệ cho những field đó.
-
-## Xử lý lỗi
-
-Service raise `NotFoundException`; handler đăng ký tại `main.py` chuyển thành 404:
-
-```json
-{"detail": "Task not found"}
-```
-
-GET/PATCH/DELETE dùng chung thông báo trong `constants.py`. UUID sai định dạng,
-JSON lỗi và dữ liệu không hợp lệ trả 422 theo định dạng validation mặc định của
-FastAPI. Swagger/ReDoc mô tả các response 404 và 422.
+Day 2 chưa có authentication/RBAC; `created_by` được truyền tường minh để thử CRUD.
+Các API nghiệp vụ của user/workspace/project/label/comment được bổ sung ở session
+sau; session này chuẩn bị đầy đủ model và constraint cho chúng.
 
 ## Kiểm tra chất lượng
 
 ```powershell
-.\.venv\Scripts\python.exe -m ruff format .
+.\.venv\Scripts\python.exe -m ruff format --check .
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m mypy
-.\.venv\Scripts\python.exe -m pytest
+.\.venv\Scripts\python.exe -m pytest -W error
 ```
 
-Ruff kiểm tra format, import, lỗi phổ biến và chặn `print` bằng rule T20; ứng dụng
-dùng `logging`. CI chạy format check, lint, mypy strict và pytest trên Python
-3.11 và 3.12. Regression test bao phủ null PATCH, whitespace/giới hạn title,
-giữ dữ liệu khi request lỗi, nullable/omission, toàn bộ CRUD qua repository được
-inject, storage độc lập giữa các app và tài liệu OpenAPI.
+Test chỉ dùng `TEST_DATABASE_URL` có tên DB kết thúc `_test` và khác DB dev.
+Mỗi test có outer transaction riêng; session của request dùng savepoint, service
+commit vẫn được rollback khi test kết thúc. Test migration chạy upgrade →
+downgrade → upgrade trong schema tạm rồi rollback toàn bộ schema đó.
 
-Tài liệu tham chiếu:
-[Pydantic serialization](https://docs.pydantic.dev/latest/concepts/serialization/),
-[Pydantic validators](https://docs.pydantic.dev/latest/concepts/validators/),
-[FastAPI lifespan](https://fastapi.tiangolo.com/advanced/events/),
-[FastAPI exception handlers](https://fastapi.tiangolo.com/tutorial/handling-errors/),
-[Starlette TestClient](https://starlette.dev/testclient/),
-[Ruff configuration](https://docs.astral.sh/ruff/configuration/).
+Test PostgreSQL thật kiểm tra default SQL, enum, FK/index, CASCADE/SET NULL/RESTRICT,
+rollback nhiều bước, mapping IntegrityError, dependency override, pagination,
+snapshot cũ, nullable PATCH và dữ liệu giữa các app instance. CI chạy PostgreSQL 16,
+Alembic upgrade/check, Ruff, mypy strict và pytest trên Python 3.11/3.12.
+
+Day 2 được chia thành PR model/migration và PR tích hợp async CRUD, mỗi PR dưới
+20 file. Khi Day 1 chưa merge, các PR dùng nhánh trước làm base để reviewer chỉ
+thấy phần thay đổi mới.
