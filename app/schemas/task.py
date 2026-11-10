@@ -1,8 +1,7 @@
-from datetime import date, datetime
+from datetime import date
 from typing import Annotated
-from uuid import UUID
 
-from pydantic import Field, field_validator
+from pydantic import AwareDatetime, Field, field_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from app.core.constants import (
@@ -11,8 +10,8 @@ from app.core.constants import (
     TITLE_MAX_LENGTH,
     TITLE_MIN_LENGTH,
 )
-from app.models.task import TaskPriority, TaskStatus
-from app.schemas.base import BaseSchema
+from app.core.enums import TaskPriority, TaskStatus
+from app.schemas.base import BaseSchema, ResourceId
 
 TaskTitle = Annotated[
     str, Field(min_length=TITLE_MIN_LENGTH, max_length=TITLE_MAX_LENGTH)
@@ -21,6 +20,9 @@ TaskDescription = Annotated[str, Field(max_length=DESCRIPTION_MAX_LENGTH)]
 
 
 class TaskCreate(BaseSchema):
+    project_id: ResourceId
+    created_by: ResourceId
+    assignee_id: ResourceId | None = None
     title: TaskTitle
     description: TaskDescription | None = None
     status: TaskStatus = TaskStatus.TODO
@@ -29,15 +31,15 @@ class TaskCreate(BaseSchema):
 
 
 class TaskUpdate(BaseSchema):
-    # None defaults allow omission. The validator rejects explicitly supplied nulls.
-    # SkipJsonSchema keeps the OpenAPI contract aligned with accepted input.
+    project_id: ResourceId | SkipJsonSchema[None] = None
+    assignee_id: ResourceId | None = None
     title: TaskTitle | SkipJsonSchema[None] = None
     status: TaskStatus | SkipJsonSchema[None] = None
     priority: TaskPriority | SkipJsonSchema[None] = None
     description: TaskDescription | None = None
     due_date: date | None = None
 
-    @field_validator("title", "status", "priority", mode="before")
+    @field_validator("title", "status", "priority", "project_id", mode="before")
     @classmethod
     def reject_explicit_null(cls, value: object) -> object:
         if value is None:
@@ -46,6 +48,13 @@ class TaskUpdate(BaseSchema):
 
 
 class TaskResponse(TaskCreate):
-    id: UUID
-    created_at: datetime
-    updated_at: datetime
+    id: ResourceId
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+
+
+class TaskPage(BaseSchema):
+    items: list[TaskResponse]
+    total: int
+    page: int
+    limit: int

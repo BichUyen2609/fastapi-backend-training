@@ -1,105 +1,186 @@
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
-from typing import cast
-from uuid import UUID
+from typing import Annotated, Any
 
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+import pytest
+from fastapi import Depends, FastAPI
+from httpx2 import ASGITransport, AsyncClient
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
-from app.api.dependencies import get_task_repository
+from app.api.dependencies import get_session, get_task_repository
+from app.core.config import Settings
+from app.core.enums import WorkspaceRole
 from app.main import create_app
-from app.models.task import Task, TaskChanges
-from app.repositories.task import InMemoryTaskRepository, TaskRepository
-from app.schemas.task import TaskCreate
-from app.services.task import TaskService
+from app.models.entities import Project, Task, Workspace, WorkspaceMember
+from app.repositories.base import BaseRepository
+from app.repositories.task import TaskRepository
+
+pytestmark = pytest.mark.anyio
 
 
-class FakeTaskRepository:
-    """An independent repository implementation for the DI regression test."""
-
-    def __init__(self) -> None:
-        self.tasks: dict[UUID, Task] = {}
-        self.calls: list[str] = []
-
-    def list_tasks(self) -> list[Task]:
-        self.calls.append("list")
-        return list(self.tasks.values())
-
-    def get_task(self, task_id: UUID) -> Task | None:
-        self.calls.append("get")
-        return self.tasks.get(task_id)
-
-    def add_task(self, task: Task) -> Task:
-        self.calls.append("add")
-        self.tasks[task.id] = task
-        return task
-
-    def update_task(self, task_id: UUID, changes: TaskChanges) -> Task | None:
-        self.calls.append("update")
-        task = self.tasks.get(task_id)
-        if task is None:
-            return None
-        updated = replace(task, **changes)
-        self.tasks[task_id] = updated
-        return updated
-
-    def delete_task(self, task_id: UUID) -> bool:
-        self.calls.append("delete")
-        return self.tasks.pop(task_id, None) is not None
-
-
-def test_repository_override_is_used_for_every_crud_operation(
-    application: FastAPI,
+async def test_repository_override_is_used_for_every_crud_operation(
+    application: FastAPI, client: AsyncClient, references: dict[str, int]
 ) -> None:
-    repository = FakeTaskRepository()
+    calls: list[str] = []
 
-    def override_repository() -> TaskRepository:
-        return repository
+    class TrackingRepository(TaskRepository):
+        async def create(self, values: dict[str, Any]) -> Task:
+            calls.append("create")
+            return await super().create(values)
+
+        async def get(self, entity_id: int) -> Task | None:
+            calls.append("get")
+            return await super().get(entity_id)
+
+        async def update(self, entity_id: int, changes: dict[str, Any]) -> Task | None:
+            calls.append("update")
+            return await super().update(entity_id, changes)
+
+        async def delete(self, entity_id: int) -> bool:
+            calls.append("delete")
+            return await super().delete(entity_id)
+
+        async def paginate(
+            self,
+            page: int,
+            limit: int,
+            filters: tuple[ColumnElement[bool], ...] = (),
+        ) -> tuple[list[Task], int]:
+            calls.append("list")
+            return await super().paginate(page, limit, filters)
+
+    def override_repository(
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> TaskRepository:
+        return TrackingRepository(session)
 
     application.dependency_overrides[get_task_repository] = override_repository
-    with TestClient(application) as client:
-        response = client.post("/api/v1/tasks", json={"title": "Injected"})
-        assert response.status_code == 201
-        task_id = UUID(response.json()["id"])
-        task_url = f"/api/v1/tasks/{task_id}"
-        assert isinstance(repository.tasks[task_id], Task)
-        assert client.get("/api/v1/tasks").json()[0]["title"] == "Injected"
-        assert client.get(task_url).status_code == 200
-        response = client.patch(task_url, json={"title": "Updated"})
-        assert response.status_code == 200
-        assert repository.tasks[task_id].title == "Updated"
-        assert client.delete(task_url).status_code == 204
-        assert repository.tasks == {}
-        assert repository.calls == ["add", "list", "get", "update", "delete"]
-        original_repository = cast(
-            InMemoryTaskRepository, application.state.task_repository
+    response = await client.post(
+        "/api/v1/tasks", json=references | {"title": "Injected"}
+    )
+    assert response.status_code == 201
+    task_url = f"/api/v1/tasks/{response.json()['id']}"
+    assert (
+        await client.get(
+            "/api/v1/tasks", params={"project_id": references["project_id"]}
         )
-        assert original_repository.list_tasks() == []
+    ).status_code == 200
+    assert (await client.get(task_url)).status_code == 200
+    assert (await client.patch(task_url, json={"title": "Updated"})).status_code == 200
+    assert (await client.delete(task_url)).status_code == 204
+    assert calls == ["create", "list", "get", "update", "delete"]
 
 
-def test_application_instances_have_independent_storage() -> None:
-    with TestClient(create_app()) as first, TestClient(create_app()) as second:
-        assert (
-            first.post("/api/v1/tasks", json={"title": "First app"}).status_code == 201
+@pytest.mark.parametrize("kind", ["foreign_key", "unique"])
+async def test_integrity_error_is_409_and_transaction_rolls_back(
+    application: FastAPI, client: AsyncClient, references: dict[str, int], kind: str
+) -> None:
+    class ConflictingRepository(TaskRepository):
+        async def create(self, values: dict[str, Any]) -> Task:
+            if kind == "foreign_key":
+                return await super().create(values | {"project_id": 2_000_000_000})
+            project = await self.session.get(Project, values["project_id"])
+            assert project is not None
+            self.session.add(
+                Project(name=project.name, workspace_id=project.workspace_id)
+            )
+            await self.session.flush()
+            return await super().create(values)
+
+    def override_repository(
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> TaskRepository:
+        return ConflictingRepository(session)
+
+    application.dependency_overrides[get_task_repository] = override_repository
+    response = await client.post(
+        "/api/v1/tasks", json=references | {"title": "Conflict"}
+    )
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Resource conflicts with existing data"}
+    application.dependency_overrides.pop(get_task_repository)
+    page = (
+        await client.get(
+            "/api/v1/tasks", params={"project_id": references["project_id"]}
         )
-        assert second.get("/api/v1/tasks").json() == []
+    ).json()
+    assert page["total"] == 0
+    assert (
+        await client.post("/api/v1/tasks", json=references | {"title": "Recovered"})
+    ).status_code == 201
 
 
-def test_concurrent_partial_updates_preserve_both_fields() -> None:
-    repository = InMemoryTaskRepository()
-    task = TaskService(repository).create_task(TaskCreate(title="Original"))
+async def test_database_persists_between_app_instances(
+    application: FastAPI,
+    client: AsyncClient,
+    references: dict[str, int],
+    test_settings: Settings,
+) -> None:
+    response = await client.post(
+        "/api/v1/tasks", json=references | {"title": "Persisted"}
+    )
+    assert response.status_code == 201
+    created = response.json()
+    second_app = create_app(test_settings)
+    second_app.dependency_overrides[get_session] = application.dependency_overrides[
+        get_session
+    ]
+    async with (
+        second_app.router.lifespan_context(second_app),
+        AsyncClient(
+            transport=ASGITransport(app=second_app), base_url="http://second"
+        ) as second,
+    ):
+        assert (await second.get(f"/api/v1/tasks/{created['id']}")).json() == created
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        first = executor.submit(repository.update_task, task.id, {"title": "Changed"})
-        second = executor.submit(
-            repository.update_task, task.id, {"description": "Added description"}
+
+async def test_partial_updates_preserve_fields_after_stale_reads(
+    db_session: AsyncSession, references: dict[str, int]
+) -> None:
+    task = await TaskRepository(db_session).create(references | {"title": "Original"})
+    connection = await db_session.connection()
+    async with (
+        AsyncSession(
+            bind=connection, join_transaction_mode="create_savepoint"
+        ) as first,
+        AsyncSession(
+            bind=connection, join_transaction_mode="create_savepoint"
+        ) as second,
+    ):
+        first_snapshot = await first.get(Task, task.id)
+        second_snapshot = await second.get(Task, task.id)
+        assert first_snapshot is not None and second_snapshot is not None
+        assert first_snapshot.title == second_snapshot.title == "Original"
+        await TaskRepository(first).update(task.id, {"title": "Changed"})
+        updated = await TaskRepository(second).update(task.id, {"description": "Added"})
+        assert updated is not None
+        assert updated.title == "Changed"
+        assert updated.description == "Added"
+
+
+async def test_workspace_and_membership_rollback_together(
+    db_session: AsyncSession, references: dict[str, int]
+) -> None:
+    workspace_id = None
+    with pytest.raises(IntegrityError):
+        async with db_session.begin_nested():
+            workspace = await BaseRepository(db_session, Workspace).create(
+                {"name": "Atomic", "owner_id": references["created_by"]}
+            )
+            workspace_id = workspace.id
+            db_session.add(
+                WorkspaceMember(
+                    workspace_id=workspace.id,
+                    user_id=2_000_000_000,
+                    role=WorkspaceRole.OWNER,
+                )
+            )
+            await db_session.flush()
+    assert workspace_id is not None
+    assert (
+        await db_session.scalar(
+            select(Workspace.id).where(Workspace.id == workspace_id)
         )
-        assert first.result() is not None
-        assert second.result() is not None
-
-    updated = repository.get_task(task.id)
-    assert updated is not None
-    assert updated.title == "Changed"
-    assert updated.description == "Added description"
-    assert task.title == "Original"
-    assert task.description is None
+        is None
+    )

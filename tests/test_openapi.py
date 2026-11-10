@@ -1,10 +1,13 @@
-from fastapi.testclient import TestClient
+import pytest
+from httpx2 import AsyncClient
+
+pytestmark = pytest.mark.anyio
 
 
-def test_openapi_documents_crud_errors_and_patch_nullability(
-    client: TestClient,
+async def test_openapi_documents_crud_errors_and_patch_nullability(
+    client: AsyncClient,
 ) -> None:
-    response = client.get("/openapi.json")
+    response = await client.get("/openapi.json")
     assert response.status_code == 200
     document = response.json()
     paths = document["paths"]
@@ -13,6 +16,7 @@ def test_openapi_documents_crud_errors_and_patch_nullability(
     assert set(task_operations) == {"get", "patch", "delete"}
     for operation in task_operations.values():
         assert "404" in operation["responses"]
+        assert "409" in operation["responses"]
         assert "422" in operation["responses"]
 
     schema = document["components"]["schemas"]["TaskUpdate"]
@@ -21,11 +25,11 @@ def test_openapi_documents_crud_errors_and_patch_nullability(
     assert properties["title"]["type"] == "string"
     assert "$ref" in properties["status"]
     assert "$ref" in properties["priority"]
-    for field in ["description", "due_date"]:
+    for field in ["description", "due_date", "assignee_id"]:
         assert {"type": "null"} in properties[field]["anyOf"]
     assert schema["additionalProperties"] is False
 
 
-def test_swagger_and_redoc_are_available(client: TestClient) -> None:
-    assert client.get("/docs").status_code == 200
-    assert client.get("/redoc").status_code == 200
+async def test_swagger_and_redoc_are_available(client: AsyncClient) -> None:
+    assert (await client.get("/docs")).status_code == 200
+    assert (await client.get("/redoc")).status_code == 200

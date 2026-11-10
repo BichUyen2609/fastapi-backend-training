@@ -15,8 +15,12 @@ COMMENT_MAX_LENGTH: Final = 4_000
 DEFAULT_PAGE: Final = 1
 DEFAULT_LIMIT: Final = 20
 MAX_LIMIT: Final = 100
+MAX_ENTITY_ID: Final = 2_147_483_647
 
 TASK_NOT_FOUND: Final = "Task not found"
+PROJECT_NOT_FOUND: Final = "Project not found"
+USER_NOT_FOUND: Final = "User not found"
+RESOURCE_CONFLICT: Final = "Resource conflicts with existing data"
 NON_NULL_FIELD_MESSAGE: Final = (
     "Field cannot be null; omit it to keep its current value"
 )
