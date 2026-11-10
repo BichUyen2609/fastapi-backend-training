@@ -1,4 +1,9 @@
-from app.core.constants import RESOURCE_CONFLICT, TASK_NOT_FOUND
+from app.core.constants import (
+    AUTHENTICATION_REQUIRED,
+    INSUFFICIENT_PERMISSIONS,
+    RESOURCE_CONFLICT,
+    TASK_NOT_FOUND,
+)
 
 
 class DomainException(Exception):
@@ -19,3 +24,13 @@ class ConflictException(DomainException):
 
 class InvalidReferenceException(DomainException):
     pass
+
+
+class AuthenticationException(DomainException):
+    def __init__(self, message: str = AUTHENTICATION_REQUIRED) -> None:
+        super().__init__(message)
+
+
+class ForbiddenException(DomainException):
+    def __init__(self, message: str = INSUFFICIENT_PERMISSIONS) -> None:
+        super().__init__(message)

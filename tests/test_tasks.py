@@ -164,7 +164,7 @@ async def test_invalid_create_does_not_write(
     assert response.json()["total"] == 0
 
 
-async def test_create_requires_title_project_and_creator(client: AsyncClient) -> None:
+async def test_create_requires_title_and_project(client: AsyncClient) -> None:
     assert (await client.post(TASKS_URL, json={})).status_code == 422
     assert (
         await client.post(TASKS_URL, json={"title": "Missing FKs"})
