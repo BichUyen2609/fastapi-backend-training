@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 from pathlib import Path
+from secrets import token_urlsafe
 from uuid import uuid4
 
 import pytest
@@ -7,6 +8,7 @@ from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
 from httpx2 import ASGITransport, AsyncClient
+from pydantic import SecretStr
 from sqlalchemy import Connection, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
@@ -19,7 +21,7 @@ from sqlalchemy.pool import NullPool
 
 from app.api.dependencies import get_session
 from app.core.config import Settings, get_settings
-from app.core.security import hash_password
+from app.core.security import create_access_token, hash_password
 from app.main import create_app
 from app.models.entities import Project, User, Workspace
 
@@ -37,7 +39,11 @@ def test_settings() -> Settings:
     assert test_url.database != make_url(str(settings.database_url)).database
     assert (test_url.database or "").endswith("_test")
     return Settings.model_validate(
-        settings.model_dump() | {"database_url": settings.test_database_url}
+        settings.model_dump()
+        | {
+            "database_url": settings.test_database_url,
+            "jwt_secret": SecretStr(token_urlsafe(48)),
+        }
     )
 
 
@@ -97,12 +103,19 @@ async def project(db_session: AsyncSession) -> Project:
 
 
 @pytest.fixture
-async def references(project: Project, db_session: AsyncSession) -> dict[str, int]:
+async def current_user(project: Project, db_session: AsyncSession) -> User:
     owner_id = await db_session.scalar(
         select(Workspace.owner_id).where(Workspace.id == project.workspace_id)
     )
     assert owner_id is not None
-    return {"project_id": project.id, "created_by": owner_id}
+    user = await db_session.get(User, owner_id)
+    assert user is not None
+    return user
+
+
+@pytest.fixture
+def references(project: Project) -> dict[str, int]:
+    return {"project_id": project.id}
 
 
 @pytest.fixture
@@ -112,7 +125,10 @@ def application(test_settings: Settings) -> FastAPI:
 
 @pytest.fixture
 async def client(
-    application: FastAPI, connection: AsyncConnection
+    application: FastAPI,
+    connection: AsyncConnection,
+    current_user: User,
+    test_settings: Settings,
 ) -> AsyncIterator[AsyncClient]:
     async def override_session() -> AsyncIterator[AsyncSession]:
         async with AsyncSession(
@@ -127,7 +143,12 @@ async def client(
         async with (
             application.router.lifespan_context(application),
             AsyncClient(
-                transport=ASGITransport(app=application), base_url="http://testserver"
+                transport=ASGITransport(app=application),
+                base_url="http://testserver",
+                headers={
+                    "Authorization": "Bearer "
+                    + create_access_token(current_user.id, test_settings)
+                },
             ) as test_client,
         ):
             yield test_client

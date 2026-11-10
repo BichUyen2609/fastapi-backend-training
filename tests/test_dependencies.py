@@ -12,7 +12,7 @@ from app.api.dependencies import get_session, get_task_repository
 from app.core.config import Settings
 from app.core.enums import WorkspaceRole
 from app.main import create_app
-from app.models.entities import Project, Task, Workspace, WorkspaceMember
+from app.models.entities import Project, Task, User, Workspace, WorkspaceMember
 from app.repositories.base import BaseRepository
 from app.repositories.task import TaskRepository
 
@@ -69,7 +69,7 @@ async def test_repository_override_is_used_for_every_crud_operation(
     assert (await client.get(task_url)).status_code == 200
     assert (await client.patch(task_url, json={"title": "Updated"})).status_code == 200
     assert (await client.delete(task_url)).status_code == 204
-    assert calls == ["create", "list", "get", "update", "delete"]
+    assert calls == ["create", "list", "get", "get", "update", "get", "delete"]
 
 
 @pytest.mark.parametrize("kind", ["foreign_key", "unique"])
@@ -129,16 +129,22 @@ async def test_database_persists_between_app_instances(
     async with (
         second_app.router.lifespan_context(second_app),
         AsyncClient(
-            transport=ASGITransport(app=second_app), base_url="http://second"
+            transport=ASGITransport(app=second_app),
+            base_url="http://second",
+            headers={"Authorization": client.headers["Authorization"]},
         ) as second,
     ):
         assert (await second.get(f"/api/v1/tasks/{created['id']}")).json() == created
 
 
 async def test_partial_updates_preserve_fields_after_stale_reads(
-    db_session: AsyncSession, references: dict[str, int]
+    db_session: AsyncSession,
+    references: dict[str, int],
+    current_user: User,
 ) -> None:
-    task = await TaskRepository(db_session).create(references | {"title": "Original"})
+    task = await TaskRepository(db_session).create(
+        references | {"title": "Original", "created_by": current_user.id}
+    )
     connection = await db_session.connection()
     async with (
         AsyncSession(
@@ -160,13 +166,14 @@ async def test_partial_updates_preserve_fields_after_stale_reads(
 
 
 async def test_workspace_and_membership_rollback_together(
-    db_session: AsyncSession, references: dict[str, int]
+    db_session: AsyncSession,
+    current_user: User,
 ) -> None:
     workspace_id = None
     with pytest.raises(IntegrityError):
         async with db_session.begin_nested():
             workspace = await BaseRepository(db_session, Workspace).create(
-                {"name": "Atomic", "owner_id": references["created_by"]}
+                {"name": "Atomic", "owner_id": current_user.id}
             )
             workspace_id = workspace.id
             db_session.add(

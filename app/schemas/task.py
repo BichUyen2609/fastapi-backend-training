@@ -21,7 +21,6 @@ TaskDescription = Annotated[str, Field(max_length=DESCRIPTION_MAX_LENGTH)]
 
 class TaskCreate(BaseSchema):
     project_id: ResourceId
-    created_by: ResourceId
     assignee_id: ResourceId | None = None
     title: TaskTitle
     description: TaskDescription | None = None
@@ -49,6 +48,7 @@ class TaskUpdate(BaseSchema):
 
 class TaskResponse(TaskCreate):
     id: ResourceId
+    created_by: ResourceId
     created_at: AwareDatetime
     updated_at: AwareDatetime
 

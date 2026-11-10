@@ -1,8 +1,8 @@
-# TaskHub — Ngày 2: SQLAlchemy async và Alembic
+# TaskHub — Ngày 3: Authentication và JWT
 
 Backend quản lý công việc dùng FastAPI, Pydantic v2, SQLAlchemy 2.x async và
-PostgreSQL 16. Day 2 bổ sung model, relationship, migration, repository CRUD async
-và phân trang vào ứng dụng Day 1.
+PostgreSQL 16. Day 3 bổ sung đăng ký, đăng nhập, access token JWT, profile hiện tại
+và bảo vệ CRUD Task bằng quyền workspace trên nền database của Day 2.
 
 ## Cài đặt và chạy
 
@@ -12,6 +12,13 @@ Yêu cầu Python 3.11+ và PostgreSQL 16. Có thể dùng Docker Compose để 
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 Copy-Item .env.example .env
+.\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+Đặt khóa ngẫu nhiên vừa tạo vào `JWT_SECRET` trong `.env`, thay giá trị `change-me`.
+Giữ khóa này riêng cho từng môi trường; `.env` đã được Git ignore. Sau đó chạy:
+
+```powershell
 docker compose up -d --wait db
 docker compose exec db createdb -U taskhub taskhub_test
 .\.venv\Scripts\python.exe -m alembic upgrade head
@@ -34,6 +41,10 @@ Các mật khẩu trong `.env.example` là dữ liệu mẫu cho local. Credenti
 SQL logging. `requirements.txt` lưu UTF-8 không BOM và là nguồn dependency runtime
 duy nhất; `pyproject.toml` đọc trực tiếp từ file này.
 
+API kiểm tra khóa JWT ngay khi startup: thiếu khóa, dùng placeholder hoặc khóa
+ngắn hơn 32 byte sẽ bị từ chối. Lệnh Alembic chỉ cần cấu hình database khi
+`JWT_SECRET` chưa được khai báo. Test tự tạo khóa riêng và chỉ dùng DB test.
+
 `app.seed` hash mật khẩu demo bằng Argon2 trước khi lưu và tạo user, workspace,
 membership OWNER, project trong cùng transaction. Chạy lại không tạo demo trùng.
 Lệnh log `user_id` và `project_id` thực tế để dùng khi gọi API.
@@ -47,7 +58,9 @@ app/
 ├── seed.py
 ├── api/
 │   ├── dependencies.py
-│   └── v1/tasks.py
+│   └── v1/
+│       ├── auth.py
+│       └── tasks.py
 ├── core/
 │   ├── config.py
 │   ├── constants.py
@@ -57,11 +70,15 @@ app/
 ├── models/entities.py
 ├── repositories/
 │   ├── base.py
+│   ├── auth.py
 │   └── task.py
 ├── schemas/
 │   ├── base.py
+│   ├── auth.py
 │   └── task.py
-└── services/task.py
+└── services/
+    ├── auth.py
+    └── task.py
 migrations/
 ├── env.py
 ├── script.py.mako
@@ -72,7 +89,9 @@ tests/
 Luồng request: router → service → repository → database. `BaseRepository[T]` cung
 cấp get/create/update/delete/paginate; `TaskRepository` bổ sung truy vấn tham chiếu.
 Repository chỉ flush, không commit. Service quản lý transaction và refresh sau
-commit; mỗi request có `AsyncSession` riêng với `expire_on_commit=False`.
+commit; mỗi request có `AsyncSession` riêng với `expire_on_commit=False`. Việc
+xác thực user và thao tác Task dùng chung session; service commit transaction
+đang mở sau phần xác thực, không gọi `begin()` chồng lên transaction đó.
 
 Lifespan kiểm tra kết nối và đóng engine khi ứng dụng dừng. Không tự tạo bảng khi
 startup; schema được quản lý bằng Alembic. Router, service và repository đều
@@ -109,6 +128,50 @@ Migration ban đầu được autogenerate từ model và đã rà lại. Khi th
 .\.venv\Scripts\python.exe -m alembic check
 ```
 
+## Authentication và phân quyền
+
+| Method | Endpoint | Dữ liệu và kết quả |
+| --- | --- | --- |
+| POST | `/api/v1/auth/register` | JSON email/full_name/password → 201, thông tin user |
+| POST | `/api/v1/auth/login` | Form username/password → 200, access token |
+| GET | `/api/v1/users/me` | Bearer token → 200, profile hiện tại |
+
+Register chuẩn hóa email về chữ thường, trim họ tên nhưng giữ nguyên khoảng
+trắng trong password. Password dài 8–128 ký tự, được hash Argon2 trong thread
+pool trước khi lưu. User mới luôn là MEMBER, active theo default của DB; client
+không được gửi role, is_active, hashed_password hay id. Email trùng trả 409, kể
+cả khi hai đăng ký đồng thời chạm unique constraint.
+
+Login dùng `application/x-www-form-urlencoded`, trường `username` là email.
+Sai email/password hoặc tài khoản bị khóa đều trả cùng lỗi 401. Response user
+không có password/hash; validation error của password không phản chiếu giá trị
+đã gửi. Response token có `Cache-Control: no-store` và `Pragma: no-cache`.
+
+JWT dùng HS256 cố định và chứa sub, exp, iat, nbf, iss, aud, jti, token_type=access.
+Server kiểm tra chữ ký, thuật toán, thời gian, issuer, audience và các claim bắt
+buộc. Token mặc định hết hạn sau 15 phút, cấu hình bằng
+`ACCESS_TOKEN_EXPIRE_MINUTES`. Mỗi request đọc lại user và trạng thái active từ DB;
+role trong token không được dùng để nâng quyền.
+
+| Vai trò | Đọc Task | Tạo/sửa/xóa Task |
+| --- | --- | --- |
+| ADMIN | Tất cả workspace | Tất cả workspace |
+| Workspace owner hoặc membership OWNER | Workspace của mình | Workspace của mình |
+| EDITOR | Workspace được tham gia | Workspace được tham gia |
+| VIEWER | Workspace được tham gia | 403 |
+| Không tham gia workspace | 403 khi truy cập trực tiếp | 403 |
+
+GET `/tasks` chỉ trả task và total thuộc các workspace user được đọc. Khi đổi
+project của task, phải có quyền sửa cả project nguồn và đích. Assignee phải là
+user active và thuộc workspace đích. Mọi endpoint Task yêu cầu Bearer token;
+token thiếu/sai/hết hạn trả 401 với `WWW-Authenticate: Bearer`.
+
+Thử trên Swagger: mở `/docs` → **Authorize**, nhập `DEMO_EMAIL` vào username và
+`DEMO_PASSWORD` vào password từ `.env`. User seed là owner của project demo.
+Đăng ký user mới không tự tạo workspace/project; các API workspace và mời member
+được bổ sung ở session sau. Refresh token/logout, middleware và Redis nằm ngoài
+phạm vi Day 3 này.
+
 ## API Task
 
 | Method | Endpoint | Kết quả |
@@ -121,7 +184,8 @@ Migration ban đầu được autogenerate từ model và đã rà lại. Khi th
 | DELETE | `/api/v1/tasks/{task_id}` | 204, body rỗng |
 
 ID chuyển từ UUID của bản in-memory Day 1 sang số nguyên dương do DB sinh.
-POST bắt buộc `title`, `project_id`, `created_by`. Các FK phải tồn tại; ID âm,
+POST bắt buộc `title`, `project_id`; `created_by` lấy từ user đăng nhập và không
+được gửi trong request. Các FK phải tồn tại; ID âm,
 bằng 0 hoặc vượt giới hạn kiểu dữ liệu bị từ chối trước khi query DB.
 
 Ví dụ trên DB mới, sau khi chạy seed; dùng ID thực tế trong log nếu DB đã có dữ liệu:
@@ -129,7 +193,6 @@ Ví dụ trên DB mới, sau khi chạy seed; dùng ID thực tế trong log n�
 ```json
 {
   "project_id": 1,
-  "created_by": 1,
   "title": "Hoàn thành Day 2",
   "priority": "HIGH",
   "due_date": "2027-01-15"
@@ -149,14 +212,11 @@ do server quản lý bị từ chối. `{}` không thay đổi task hay `updated
 UPDATE chỉ ghi các cột client gửi, tránh ghi đè field khác từ snapshot cũ khi có
 PATCH đồng thời. ID và `created_at` bất biến; `created_by` không sửa qua PATCH.
 
-Domain exception được handler tập trung chuyển thành 404 khi không tìm thấy,
+Domain exception được handler tập trung chuyển thành 401 khi xác thực thất bại,
+403 khi thiếu quyền, 404 khi không tìm thấy,
 422 khi tham chiếu đầu vào không hợp lệ, 409 khi xung đột FK/unique lúc ghi DB.
 Transaction lỗi được rollback; API không lộ chi tiết SQL. Swagger/ReDoc mô tả
-các response 404/409/422 và hai dạng detail của lỗi domain/validation.
-
-Day 2 chưa có authentication/RBAC; `created_by` được truyền tường minh để thử CRUD.
-Các API nghiệp vụ của user/workspace/project/label/comment được bổ sung ở session
-sau; session này chuẩn bị đầy đủ model và constraint cho chúng.
+các response 401/403/404/409/422 và hai dạng detail của lỗi domain/validation.
 
 ## Kiểm tra chất lượng
 
@@ -174,9 +234,10 @@ downgrade → upgrade trong schema tạm rồi rollback toàn bộ schema đó.
 
 Test PostgreSQL thật kiểm tra default SQL, enum, FK/index, CASCADE/SET NULL/RESTRICT,
 rollback nhiều bước, mapping IntegrityError, dependency override, pagination,
-snapshot cũ, nullable PATCH và dữ liệu giữa các app instance. CI chạy PostgreSQL 16,
+snapshot cũ, nullable PATCH và dữ liệu giữa các app instance. Test Day 3 kiểm tra
+JWT giả/hết hạn/thiếu claim, khóa user, quyền workspace, giả mạo created_by và
+đăng ký trùng email. CI chạy PostgreSQL 16,
 Alembic upgrade/check, Ruff, mypy strict và pytest trên Python 3.11/3.12.
 
-Day 2 được chia thành PR model/migration và PR tích hợp async CRUD, mỗi PR dưới
-20 file. Khi Day 1 chưa merge, các PR dùng nhánh trước làm base để reviewer chỉ
-thấy phần thay đổi mới.
+Nhánh Day 3 được tạo từ main sau khi merge đầy đủ Day 1 và Day 2. Các phần nghiệp
+vụ còn lại trong lịch Day 4–7 được giữ cho các session tiếp theo.
