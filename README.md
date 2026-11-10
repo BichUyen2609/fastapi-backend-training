@@ -1,4 +1,49 @@
-# TaskHub — Day 1: Core Setup & CRUD
+# TaskHub — FastAPI Backend Training
+
+Day 2 được chia thành hai PR: database/model/migration, sau đó async CRUD và
+phân trang. Phần database định nghĩa đủ 8 bảng của sample app: users, workspaces,
+workspace_members, projects, tasks, labels, task_labels, comments. API Day 1 được
+giữ nguyên trong PR database; PR tiếp theo chuyển API sang SQLAlchemy async.
+
+## Database và migration
+
+```powershell
+Copy-Item .env.example .env
+docker compose up -d db
+docker compose exec db createdb -U taskhub taskhub_test
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m alembic check
+.\.venv\Scripts\python.exe -m app.seed
+```
+
+Các giá trị mật khẩu trong `.env.example` chỉ là dữ liệu mẫu cho local. Config đọc
+qua `Settings`; code không có credential mặc định. `requirements.txt` là nguồn
+khai báo dependency runtime, `pyproject.toml` đọc trực tiếp từ file này.
+
+Model ORM nằm trong `app/models/entities.py`, enum ở `app/core/enums.py`, cấu hình
+session ở `app/database.py`. Mỗi request sẽ có session riêng với
+`expire_on_commit=False`. Timestamps dùng `TIMESTAMP WITH TIME ZONE` và được đọc
+về UTC. Enum dùng CHECK constraint (`native_enum=False`, `create_constraint=True`),
+nên downgrade không để lại PostgreSQL enum type. Các cột có default dùng
+`server_default`; độ dài chuỗi dùng constants chung cho schema, model và migration.
+
+Workspace/project/task dùng CASCADE cho dữ liệu con; xóa assignee đặt
+`assignee_id=NULL`; xóa owner/creator/author còn dữ liệu tham chiếu bị RESTRICT.
+Relationship cấu hình `passive_deletes` và `lazy="raise"` để tránh ghi FK null hoặc
+phát sinh lazy query ngoài ý muốn trong async. FK dùng để filter/join có index;
+hai bảng liên kết có thêm index cho cột không đứng đầu khóa chính ghép.
+
+`python -m app.seed` tạo user đã hash mật khẩu bằng Argon2, workspace, membership
+OWNER và project trong cùng transaction. Chạy lại không tạo demo trùng. Lệnh log
+`user_id` và `project_id` thực tế để dùng khi thử API ở PR tích hợp.
+
+Test database chỉ nhận `TEST_DATABASE_URL` có tên DB kết thúc bằng `_test` và khác
+DB dev. Mỗi test mở transaction riêng và rollback khi kết thúc. Kiểm thử migration
+chạy upgrade/downgrade/upgrade trong schema tạm của DB test, không thay schema dev.
+Test dùng PostgreSQL thật; không thay bằng SQLite hoặc tắt kiểm tra foreign key.
+
+## Day 1: Core Setup & CRUD
 
 Skeleton API quản lý công việc theo layered architecture, dùng FastAPI và Pydantic v2.
 Phạm vi Day 1: app instance, APIRouter, lifespan, dependency injection và CRUD cho

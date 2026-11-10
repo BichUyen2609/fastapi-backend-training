@@ -13,6 +13,27 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.11", "3.12"]
+    env:
+      DATABASE_URL: postgresql+asyncpg://taskhub:taskhub_ci_only@127.0.0.1:5432/taskhub
+      TEST_DATABASE_URL: postgresql+asyncpg://taskhub:taskhub_ci_only@127.0.0.1:5432/taskhub_test
+      DATABASE_ECHO: "false"
+      PGPASSWORD: taskhub_ci_only
+      DEMO_EMAIL: demo@example.test
+      DEMO_PASSWORD: taskhub_ci_demo_only
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: taskhub
+          POSTGRES_PASSWORD: taskhub_ci_only
+          POSTGRES_DB: taskhub
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U taskhub -d taskhub"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -20,7 +41,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - run: python -m pip install -e ".[dev]"
+      - run: createdb -h 127.0.0.1 -U taskhub taskhub_test
+      - run: python -m alembic upgrade head
+      - run: python -m alembic check
       - run: python -m ruff format --check .
       - run: python -m ruff check .
       - run: python -m mypy
-      - run: python -m pytest
+      - run: python -m pytest -W error
