@@ -1,10 +1,13 @@
-# TaskHub — Ngày 4: Authorization, RBAC và Workspace
+# TaskHub — Ngày 5: Middleware và Exception Handling
 
 Backend quản lý công việc dùng FastAPI, Pydantic v2, SQLAlchemy 2.x async và
 PostgreSQL 16. Day 3 bổ sung đăng ký, đăng nhập, access token JWT và bảo vệ CRUD
 Task. Day 4 hoàn thiện vòng đời phiên đăng nhập (refresh token xoay vòng, logout),
 quản lý profile/mật khẩu, CRUD Workspace, mời/xóa member, CRUD Project có archive,
-và gom toàn bộ phân quyền ADMIN/OWNER/EDITOR/VIEWER về một chỗ.
+và gom toàn bộ phân quyền ADMIN/OWNER/EDITOR/VIEWER về một chỗ. Day 5 thêm
+middleware (request ID, access log, thời gian xử lý, security header, CORS), xử lý
+lỗi tập trung với một định dạng response duy nhất, API Label/Comment và lọc task
+theo status, priority, assignee.
 
 ## Cài đặt và chạy
 
@@ -66,12 +69,16 @@ app/
 │       ├── users.py
 │       ├── workspaces.py
 │       ├── projects.py
-│       └── tasks.py
+│       ├── tasks.py
+│       ├── labels.py
+│       └── comments.py
 ├── core/
 │   ├── config.py
 │   ├── constants.py
 │   ├── enums.py
+│   ├── errors.py
 │   ├── exceptions.py
+│   ├── middleware.py
 │   └── security.py
 ├── models/entities.py
 ├── repositories/
@@ -80,20 +87,26 @@ app/
 │   ├── auth.py
 │   ├── workspace.py
 │   ├── project.py
-│   └── task.py
+│   ├── task.py
+│   ├── label.py
+│   └── comment.py
 ├── schemas/
 │   ├── base.py
 │   ├── auth.py
 │   ├── workspace.py
 │   ├── project.py
-│   └── task.py
+│   ├── task.py
+│   ├── label.py
+│   └── comment.py
 └── services/
     ├── base.py
     ├── auth.py
     ├── user.py
     ├── workspace.py
     ├── project.py
-    └── task.py
+    ├── task.py
+    ├── label.py
+    └── comment.py
 migrations/
 ├── env.py
 ├── script.py.mako
@@ -206,6 +219,10 @@ quy tắc chỉ định nghĩa một lần; truy vấn quyền nằm trong `Acce
 | Xóa project | OWNER |
 | Đọc task | VIEWER |
 | Tạo/sửa/xóa task | EDITOR |
+| Xem label, comment | VIEWER |
+| Tạo/sửa/xóa label, gán/bỏ label, thêm comment | EDITOR |
+| Xóa comment của chính mình | VIEWER |
+| Xóa comment của người khác | OWNER |
 
 Resource không tồn tại trả 404; tồn tại nhưng user không thuộc workspace hoặc
 thiếu quyền trả 403. `/workspaces` và `/tasks` chỉ trả dữ liệu user được đọc
@@ -241,7 +258,7 @@ xóa task hoặc chuyển task vào project đó trả 409 cho đến khi restor
 
 Thử trên Swagger: mở `/docs` → **Authorize**, nhập `DEMO_EMAIL` vào username và
 `DEMO_PASSWORD` vào password từ `.env`. User seed là owner của workspace/project
-demo. Middleware, Redis cache, Label/Comment API nằm ngoài phạm vi Day 4.
+demo.
 
 ## API Task
 
@@ -271,8 +288,15 @@ Ví dụ trên DB mới, sau khi chạy seed; dùng ID thực tế trong log n�
 ```
 
 List trả `items`, `total`, `page`, `limit`. `total` là tổng kết quả trước khi phân
-trang; mặc định page=1, limit=20, tối đa 100. Có thể lọc `/tasks` theo `project_id`.
-Thứ tự ổn định theo `created_at DESC, id DESC`, có tie-breaker khi timestamp bằng nhau.
+trang; mặc định page=1, limit=20, tối đa 100. Cả `/tasks` và
+`/projects/{project_id}/tasks` lọc được theo `status`, `priority`, `assignee_id`
+(kết hợp được với nhau và với phân trang); `/tasks` lọc thêm theo `project_id`.
+Giá trị enum hoặc ID không hợp lệ trả 422. Thứ tự ổn định theo
+`created_at DESC, id DESC`, có tie-breaker khi timestamp bằng nhau.
+
+```text
+GET /api/v1/projects/1/tasks?status=IN_PROGRESS&priority=HIGH&assignee_id=2&page=1&limit=20
+```
 
 PATCH dùng `exclude_unset=True`: bỏ qua field thì giữ nguyên; `description`,
 `due_date`, `assignee_id` nhận null để xóa giá trị. `title`, `status`, `priority`,
@@ -283,12 +307,71 @@ do server quản lý bị từ chối. `{}` không thay đổi task hay `updated
 UPDATE chỉ ghi các cột client gửi, tránh ghi đè field khác từ snapshot cũ khi có
 PATCH đồng thời. ID và `created_at` bất biến; `created_by` không sửa qua PATCH.
 
-Domain exception được một handler chung chuyển thành 400 khi vi phạm quy tắc
-nghiệp vụ, 401 khi xác thực thất bại,
-403 khi thiếu quyền, 404 khi không tìm thấy,
-422 khi tham chiếu đầu vào không hợp lệ, 409 khi xung đột FK/unique lúc ghi DB.
-Transaction lỗi được rollback; API không lộ chi tiết SQL. Swagger/ReDoc mô tả
-các response 401/403/404/409/422 và hai dạng detail của lỗi domain/validation.
+## API Label và Comment
+
+| Method | Endpoint | Kết quả |
+| --- | --- | --- |
+| POST | `/api/v1/projects/{project_id}/labels` | 201, label mới |
+| GET | `/api/v1/projects/{project_id}/labels` | 200, sắp theo tên |
+| PATCH/DELETE | `/api/v1/labels/{label_id}` | 200/204 |
+| GET | `/api/v1/tasks/{task_id}/labels` | 200, label của task |
+| POST | `/api/v1/tasks/{task_id}/labels/{label_id}` | 200, danh sách label sau khi gán |
+| DELETE | `/api/v1/tasks/{task_id}/labels/{label_id}` | 204 |
+| POST | `/api/v1/tasks/{task_id}/comments` | 201, `author_id` là user đăng nhập |
+| GET | `/api/v1/tasks/{task_id}/comments?page=1&limit=20` | 200, phân trang |
+| DELETE | `/api/v1/comments/{comment_id}` | 204 |
+
+Label có `name` (1–150 ký tự, duy nhất trong project, trùng trả 409) và `color`
+dạng `#RRGGBB`, lưu chữ thường. Chỉ gán được label cùng project với task (422).
+Gán và bỏ gán đều idempotent. Khi task chuyển sang project khác, các label của
+project cũ được gỡ khỏi task; xóa label sẽ gỡ label đó khỏi mọi task. Comment dài
+1–4.000 ký tự sau khi trim; client không gửi được `author_id`. Project ARCHIVED
+chỉ đọc nên tạo/sửa label, gán label, thêm hoặc xóa comment đều trả 409.
+
+## Middleware và xử lý lỗi
+
+Thứ tự middleware từ ngoài vào trong: `RequestContextMiddleware` → CORS →
+`SecurityHeadersMiddleware` → router. Các middleware viết dạng ASGI thuần, không
+dùng `BaseHTTPMiddleware`, nên không đọc lại body và không chặn streaming.
+
+- **Request ID:** nhận `X-Request-ID` của client nếu khớp `[A-Za-z0-9._-]{8,64}`,
+  ngược lại sinh UUID mới. ID được trả về trong header, trong body lỗi và ghi vào
+  log để truy vết một request xuyên suốt.
+- **Access log:** logger `taskhub.access` ghi request ID, method, path, status và
+  thời gian xử lý, kể cả khi request lỗi 500. Không ghi header hay body nên token
+  và mật khẩu không lọt vào log.
+- **Thời gian xử lý:** header `X-Process-Time-Ms`.
+- **Security header:** `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+  `Referrer-Policy: no-referrer`.
+- **CORS:** chỉ cho phép các origin trong `CORS_ORIGINS` (JSON list trong `.env`,
+  mặc định rỗng là chặn mọi origin), expose `X-Request-ID` và `X-Process-Time-Ms`.
+
+Mọi lỗi trả cùng một định dạng:
+
+```json
+{"detail": "Task not found", "code": "NOT_FOUND", "request_id": "3f9c..."}
+```
+
+| Nguồn lỗi | Status | `code` |
+| --- | --- | --- |
+| Vi phạm quy tắc nghiệp vụ | 400 | `BAD_REQUEST` |
+| Thiếu/sai token | 401 | `UNAUTHORIZED` (kèm `WWW-Authenticate: Bearer`) |
+| Thiếu quyền | 403 | `FORBIDDEN` |
+| Không tìm thấy resource hoặc route | 404 | `NOT_FOUND` |
+| Sai HTTP method | 405 | `METHOD_NOT_ALLOWED` |
+| Xung đột unique/FK, project archived | 409 | `CONFLICT` |
+| Tham chiếu không hợp lệ | 422 | `INVALID_REFERENCE` |
+| Body/query/path sai kiểu | 422 | `VALIDATION_ERROR`, `detail` là danh sách lỗi |
+| Mất kết nối database | 503 | `SERVICE_UNAVAILABLE` (kèm `Retry-After`) |
+| Lỗi không lường trước | 500 | `INTERNAL_ERROR` |
+
+Mỗi domain exception tự khai báo `status_code` và `code`, handler chung trong
+`core/errors.py` chỉ việc đọc ra. Lỗi 500 trả thông điệp chung, còn traceback
+cùng request ID được ghi vào logger `taskhub.errors`; response không bao giờ chứa
+chi tiết exception hay câu SQL. Validation error của field password/token bỏ
+`input` và `ctx` để không phản chiếu giá trị đã gửi. Transaction lỗi được
+rollback. Swagger/ReDoc mô tả các response 401/403/404/409/422 theo schema
+`ErrorResponse`.
 
 ## Kiểm tra chất lượng
 
@@ -311,9 +394,13 @@ JWT giả/hết hạn/thiếu claim, khóa user, quyền workspace, giả mạo 
 đăng ký trùng email. Test Day 4 kiểm tra refresh token xoay vòng, dùng lại, hết
 hạn, logout; đổi mật khẩu thu hồi phiên; PATCH profile; ma trận quyền
 VIEWER/EDITOR/OWNER/ADMIN/người ngoài cho workspace, member và project; khóa
-owner; bỏ assign khi xóa member và chặn ghi task trong project archived.
+owner; bỏ assign khi xóa member và chặn ghi task trong project archived. Test
+Day 5 kiểm tra request ID (sinh mới, nhận từ client, thay giá trị không hợp lệ),
+security header, access log, CORS, định dạng lỗi 404/405/422/401, lỗi 500 không lộ
+chi tiết, 503 khi mất DB, CRUD và phân quyền Label/Comment, gán label khác project,
+gỡ label khi chuyển task và lọc task theo từng tiêu chí lẫn kết hợp.
 CI chạy PostgreSQL 16,
 Alembic upgrade/check, Ruff, mypy strict và pytest trên Python 3.11/3.12.
 
-Nhánh Day 4 được tạo từ nhánh Day 3. Middleware, caching Redis, Label/Comment,
-background task và Docker cho app được giữ cho các session tiếp theo.
+Nhánh Day 5 được tạo từ nhánh Day 4. Caching Redis, background task và Docker cho
+app được giữ cho các session tiếp theo.

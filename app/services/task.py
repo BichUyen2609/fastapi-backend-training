@@ -3,17 +3,19 @@ from contextlib import asynccontextmanager
 
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.core.constants import INVALID_ASSIGNEE, PROJECT_ARCHIVED, PROJECT_NOT_FOUND
-from app.core.enums import ProjectStatus, UserRole, WorkspaceRole
-from app.core.exceptions import (
-    ConflictException,
-    InvalidReferenceException,
-    NotFoundException,
-)
+from app.core.constants import INVALID_ASSIGNEE
+from app.core.enums import UserRole
+from app.core.exceptions import InvalidReferenceException, NotFoundException
 from app.models.entities import Task, User
 from app.repositories.task import TaskRepository
-from app.schemas.task import TaskCreate, TaskPage, TaskResponse, TaskUpdate
-from app.services.base import ensure_role, transaction
+from app.schemas.task import (
+    TaskCreate,
+    TaskFilters,
+    TaskPage,
+    TaskResponse,
+    TaskUpdate,
+)
+from app.services.base import authorize_project, transaction
 
 
 class TaskService:
@@ -29,18 +31,13 @@ class TaskService:
     async def authorize_project(
         self, project_id: int, *, write: bool = False, input_reference: bool = False
     ) -> None:
-        access = await self.repository.project_access(project_id, self.actor.id)
-        if access is None:
-            if input_reference:
-                raise InvalidReferenceException(PROJECT_NOT_FOUND)
-            raise NotFoundException(PROJECT_NOT_FOUND)
-        ensure_role(
+        await authorize_project(
+            self.repository,
             self.actor,
-            access.role,
-            WorkspaceRole.EDITOR if write else WorkspaceRole.VIEWER,
+            project_id,
+            write=write,
+            input_reference=input_reference,
         )
-        if write and access.status == ProjectStatus.ARCHIVED:
-            raise ConflictException(PROJECT_ARCHIVED)
 
     async def validate_assignee(self, project_id: int, assignee_id: int | None) -> None:
         if assignee_id is not None:
@@ -53,18 +50,30 @@ class TaskService:
                 raise InvalidReferenceException(INVALID_ASSIGNEE)
 
     async def list_tasks(
-        self, page: int, limit: int, project_id: int | None = None
+        self,
+        page: int,
+        limit: int,
+        project_id: int | None = None,
+        filters: TaskFilters | None = None,
     ) -> TaskPage:
-        filters: tuple[ColumnElement[bool], ...] = (
-            () if project_id is None else (Task.project_id == project_id,)
+        criteria = filters or TaskFilters()
+        conditions: tuple[ColumnElement[bool], ...] = tuple(
+            condition
+            for value, condition in (
+                (project_id, Task.project_id == project_id),
+                (criteria.status, Task.status == criteria.status),
+                (criteria.priority, Task.priority == criteria.priority),
+                (criteria.assignee_id, Task.assignee_id == criteria.assignee_id),
+            )
+            if value is not None
         )
         if project_id is not None:
             await self.authorize_project(project_id)
         if self.actor.role != UserRole.ADMIN:
-            filters += (
+            conditions += (
                 Task.project_id.in_(self.repository.visible_projects(self.actor.id)),
             )
-        tasks, total = await self.repository.paginate(page, limit, filters)
+        tasks, total = await self.repository.paginate(page, limit, conditions)
         return TaskPage(
             items=[TaskResponse.model_validate(task) for task in tasks],
             total=total,
@@ -111,9 +120,12 @@ class TaskService:
             if "assignee_id" in changes or "project_id" in changes:
                 await self.validate_assignee(target_project, assignee_id)
             if changes:
+                moved = target_project != task.project_id
                 task = await self.repository.update(task_id, changes)
                 if task is None:
                     raise NotFoundException()
+                if moved:
+                    await self.repository.clear_labels(task_id)
         await self.repository.session.refresh(task)
         return task
 

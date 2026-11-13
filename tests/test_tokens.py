@@ -133,7 +133,7 @@ async def test_update_profile_normalizes_email_and_rejects_duplicates(
         "/api/v1/users/me", json={"email": other.email.upper()}
     )
     assert duplicate.status_code == 409
-    assert duplicate.json() == {"detail": "Email already registered"}
+    assert duplicate.json()["detail"] == "Email already registered"
 
 
 @pytest.mark.parametrize(
@@ -165,7 +165,7 @@ async def test_change_password_rehashes_and_revokes_sessions(
         headers=headers,
     )
     assert wrong.status_code == 400
-    assert wrong.json() == {"detail": "Current password is incorrect"}
+    assert wrong.json()["detail"] == "Current password is incorrect"
     same = await client.post(
         "/api/v1/users/me/password",
         json={"current_password": PASSWORD, "new_password": PASSWORD},

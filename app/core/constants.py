@@ -3,6 +3,14 @@ from typing import Final
 APP_NAME: Final = "TaskHub"
 APP_VERSION: Final = "0.1.0"
 API_V1_PREFIX: Final = "/api/v1"
+REQUEST_ID_HEADER: Final = "X-Request-ID"
+PROCESS_TIME_HEADER: Final = "X-Process-Time-Ms"
+SECURITY_HEADERS: Final = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+}
+CORS_MAX_AGE_SECONDS: Final = 600
 
 TITLE_MIN_LENGTH: Final = 1
 TITLE_MAX_LENGTH: Final = 200
@@ -11,6 +19,7 @@ NAME_MAX_LENGTH: Final = 150
 EMAIL_MAX_LENGTH: Final = 254
 PASSWORD_HASH_MAX_LENGTH: Final = 255
 COLOR_MAX_LENGTH: Final = 7
+COLOR_PATTERN: Final = r"^#[0-9A-Fa-f]{6}$"
 COMMENT_MAX_LENGTH: Final = 4_000
 DEFAULT_PAGE: Final = 1
 DEFAULT_LIMIT: Final = 20
@@ -31,6 +40,12 @@ SECONDS_PER_DAY: Final = 86_400
 SECONDS_PER_MINUTE: Final = 60
 
 TASK_NOT_FOUND: Final = "Task not found"
+LABEL_NOT_FOUND: Final = "Label not found"
+COMMENT_NOT_FOUND: Final = "Comment not found"
+LABEL_NAME_TAKEN: Final = "Label name already exists in this project"
+LABEL_PROJECT_MISMATCH: Final = "Label must belong to the task's project"
+INTERNAL_ERROR: Final = "Internal server error"
+SERVICE_UNAVAILABLE: Final = "Service temporarily unavailable"
 PROJECT_NOT_FOUND: Final = "Project not found"
 USER_NOT_FOUND: Final = "User not found"
 WORKSPACE_NOT_FOUND: Final = "Workspace not found"

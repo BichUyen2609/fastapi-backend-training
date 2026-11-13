@@ -107,7 +107,7 @@ async def test_duplicate_email_is_409_including_case_and_database_race(
     with patch.object(UserRepository, "get_by_email", new=AsyncMock(return_value=None)):
         response = await client.post("/api/v1/auth/register", json=payload)
     assert response.status_code == 409
-    assert response.json() == {"detail": "Email already registered"}
+    assert response.json()["detail"] == "Email already registered"
     assert (
         await client.post(
             "/api/v1/auth/login",
@@ -173,7 +173,9 @@ async def test_wrong_password_and_unknown_user_have_same_error(
         data={"username": "missing@example.com", "password": "Wrong_password"},
     )
     assert wrong.status_code == unknown.status_code == 401
-    assert wrong.json() == unknown.json() == {"detail": "Invalid email or password"}
+    assert wrong.json()["detail"] == unknown.json()["detail"]
+    assert wrong.json()["detail"] == "Invalid email or password"
+    assert wrong.json()["code"] == unknown.json()["code"] == "UNAUTHORIZED"
     assert wrong.headers["www-authenticate"] == "Bearer"
 
 

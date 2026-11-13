@@ -12,10 +12,14 @@ from app.core.security import decode_access_token
 from app.database import Database
 from app.models.entities import User
 from app.repositories.auth import RefreshTokenRepository, UserRepository
+from app.repositories.comment import CommentRepository
+from app.repositories.label import LabelRepository
 from app.repositories.project import ProjectRepository
 from app.repositories.task import TaskRepository
 from app.repositories.workspace import WorkspaceRepository
 from app.services.auth import AuthService
+from app.services.comment import CommentService
+from app.services.label import LabelService
 from app.services.project import ProjectService
 from app.services.task import TaskService
 from app.services.user import UserService
@@ -92,8 +96,20 @@ def get_project_service(
     return ProjectService(ProjectRepository(session), user)
 
 
+def get_label_service(session: SessionDependency, user: CurrentUser) -> LabelService:
+    return LabelService(LabelRepository(session), user)
+
+
+def get_comment_service(
+    session: SessionDependency, user: CurrentUser
+) -> CommentService:
+    return CommentService(CommentRepository(session), user)
+
+
 TaskServiceDependency = Annotated[TaskService, Depends(get_task_service)]
 AuthServiceDependency = Annotated[AuthService, Depends(get_auth_service)]
 UserServiceDependency = Annotated[UserService, Depends(get_user_service)]
 WorkspaceServiceDependency = Annotated[WorkspaceService, Depends(get_workspace_service)]
 ProjectServiceDependency = Annotated[ProjectService, Depends(get_project_service)]
+LabelServiceDependency = Annotated[LabelService, Depends(get_label_service)]
+CommentServiceDependency = Annotated[CommentService, Depends(get_comment_service)]

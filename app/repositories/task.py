@@ -1,7 +1,7 @@
-from sqlalchemy import exists, select
+from sqlalchemy import delete, exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.entities import Project, Task, User
+from app.models.entities import Project, Task, TaskLabel, User
 from app.repositories.access import AccessRepository
 from app.repositories.base import BaseRepository
 
@@ -22,4 +22,9 @@ class TaskRepository(AccessRepository, BaseRepository[Task]):
                 select(exists().where(User.id == user_id, User.is_active.is_(True)))
             )
             is True
+        )
+
+    async def clear_labels(self, task_id: int) -> None:
+        await self.session.execute(
+            delete(TaskLabel).where(TaskLabel.task_id == task_id)
         )

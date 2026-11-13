@@ -4,7 +4,7 @@ from sqlalchemy import Select, and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import ProjectStatus, WorkspaceRole
-from app.models.entities import Project, Workspace, WorkspaceMember
+from app.models.entities import Project, Task, Workspace, WorkspaceMember
 
 
 class WorkspaceAccess(NamedTuple):
@@ -78,6 +78,12 @@ class AccessRepository:
             row.status,
             effective_role(row.owner_id, user_id, row.role),
         )
+
+    async def task_project(self, task_id: int) -> int | None:
+        result = await self.session.scalars(
+            select(Task.project_id).where(Task.id == task_id)
+        )
+        return result.one_or_none()
 
     def visible_workspaces(self, user_id: int) -> Select[tuple[int]]:
         memberships = select(WorkspaceMember.workspace_id).where(

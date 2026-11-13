@@ -17,6 +17,8 @@ class BaseSchema(BaseModel):
 
 class ErrorResponse(BaseSchema):
     detail: str | list[dict[str, Any]]
+    code: str
+    request_id: str | None
 
 
 def reject_null(value: object) -> object:
