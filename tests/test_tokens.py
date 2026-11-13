@@ -174,10 +174,10 @@ async def test_change_password_rehashes_and_revokes_sessions(
     assert same.status_code == 400
     short = await client.post(
         "/api/v1/users/me/password",
-        json={"current_password": PASSWORD, "new_password": "short"},
+        json={"current_password": PASSWORD, "new_password": "Tiny7"},
         headers=headers,
     )
-    assert short.status_code == 422 and "short" not in short.text
+    assert short.status_code == 422 and "Tiny7" not in short.text
     response = await client.post(
         "/api/v1/users/me/password",
         json={"current_password": PASSWORD, "new_password": "Brand_new_pw_2"},
