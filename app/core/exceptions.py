@@ -12,6 +12,10 @@ class DomainException(Exception):
         super().__init__(message)
 
 
+class BadRequestException(DomainException):
+    pass
+
+
 class NotFoundException(DomainException):
     def __init__(self, message: str = TASK_NOT_FOUND) -> None:
         super().__init__(message)

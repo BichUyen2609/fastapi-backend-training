@@ -24,6 +24,7 @@ from app.core.constants import (
     NAME_MAX_LENGTH,
     PASSWORD_HASH_MAX_LENGTH,
     TITLE_MAX_LENGTH,
+    TOKEN_HASH_LENGTH,
 )
 from app.core.enums import (
     ProjectStatus,
@@ -70,6 +71,24 @@ class User(Entity):
     comments: Mapped[list[Comment]] = relationship(
         back_populates="author", passive_deletes="all", lazy="raise"
     )
+    refresh_tokens: Mapped[list[RefreshToken]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        lazy="raise",
+    )
+
+
+class RefreshToken(Entity):
+    __tablename__ = "refresh_tokens"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(TOKEN_HASH_LENGTH), unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    user: Mapped[User] = relationship(back_populates="refresh_tokens", lazy="raise")
 
 
 class Workspace(Entity):

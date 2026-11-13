@@ -1,20 +1,19 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.core.constants import INVALID_ASSIGNEE, PROJECT_NOT_FOUND
-from app.core.enums import UserRole, WorkspaceRole
+from app.core.constants import INVALID_ASSIGNEE, PROJECT_ARCHIVED, PROJECT_NOT_FOUND
+from app.core.enums import ProjectStatus, UserRole, WorkspaceRole
 from app.core.exceptions import (
     ConflictException,
-    ForbiddenException,
     InvalidReferenceException,
     NotFoundException,
 )
 from app.models.entities import Task, User
 from app.repositories.task import TaskRepository
 from app.schemas.task import TaskCreate, TaskPage, TaskResponse, TaskUpdate
+from app.services.base import ensure_role, transaction
 
 
 class TaskService:
@@ -24,33 +23,33 @@ class TaskService:
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[None]:
-        try:
+        async with transaction(self.repository.session):
             yield
-            await self.repository.session.commit()
-        except IntegrityError as exc:
-            await self.repository.session.rollback()
-            raise ConflictException() from exc
-        except BaseException:
-            await self.repository.session.rollback()
-            raise
 
     async def authorize_project(
         self, project_id: int, *, write: bool = False, input_reference: bool = False
     ) -> None:
-        exists, role = await self.repository.project_access(project_id, self.actor.id)
-        if not exists:
+        access = await self.repository.project_access(project_id, self.actor.id)
+        if access is None:
             if input_reference:
                 raise InvalidReferenceException(PROJECT_NOT_FOUND)
             raise NotFoundException(PROJECT_NOT_FOUND)
-        if self.actor.role == UserRole.ADMIN:
-            return
-        if role is None or (write and role == WorkspaceRole.VIEWER):
-            raise ForbiddenException()
+        ensure_role(
+            self.actor,
+            access.role,
+            WorkspaceRole.EDITOR if write else WorkspaceRole.VIEWER,
+        )
+        if write and access.status == ProjectStatus.ARCHIVED:
+            raise ConflictException(PROJECT_ARCHIVED)
 
     async def validate_assignee(self, project_id: int, assignee_id: int | None) -> None:
         if assignee_id is not None:
-            _, role = await self.repository.project_access(project_id, assignee_id)
-            if role is None or not await self.repository.user_exists(assignee_id):
+            access = await self.repository.project_access(project_id, assignee_id)
+            if (
+                access is None
+                or access.role is None
+                or not await self.repository.user_exists(assignee_id)
+            ):
                 raise InvalidReferenceException(INVALID_ASSIGNEE)
 
     async def list_tasks(
