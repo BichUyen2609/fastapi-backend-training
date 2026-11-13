@@ -1,7 +1,7 @@
 from datetime import date
 from typing import Annotated
 
-from pydantic import AwareDatetime, Field, field_validator
+from pydantic import AwareDatetime, ConfigDict, Field, field_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from app.core.constants import (
@@ -54,3 +54,11 @@ class TaskPage(BaseSchema):
     total: int
     page: int
     limit: int
+
+
+class TaskFilters(BaseSchema):
+    model_config = ConfigDict(extra="ignore")
+
+    status: TaskStatus | None = None
+    priority: TaskPriority | None = None
+    assignee_id: ResourceId | None = None

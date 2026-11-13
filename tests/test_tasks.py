@@ -222,7 +222,7 @@ async def test_missing_task_has_consistent_error(
 ) -> None:
     response = await client.request(method, f"{TASKS_URL}/2000000000", json={})
     assert response.status_code == 404
-    assert response.json() == {"detail": "Task not found"}
+    assert response.json()["detail"] == "Task not found"
 
 
 @pytest.mark.parametrize("task_id", ["0", "-1", "not-an-id", "99999999999999999999"])

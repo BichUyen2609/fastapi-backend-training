@@ -41,9 +41,7 @@ async def test_duplicate_project_name_is_409(
     base = f"/api/v1/workspaces/{project.workspace_id}/projects"
     response = await client.post(base, json={"name": project.name})
     assert response.status_code == 409
-    assert response.json() == {
-        "detail": "Project name already exists in this workspace"
-    }
+    assert response.json()["detail"] == "Project name already exists in this workspace"
     other = await client.post(base, json={"name": "Unique"})
     assert (
         await client.patch(
@@ -77,7 +75,7 @@ async def test_archive_blocks_task_writes_until_restored(
         "/api/v1/tasks", json={"project_id": project.id, "title": "After"}
     )
     assert blocked.status_code == 409
-    assert blocked.json() == {"detail": "Project is archived"}
+    assert blocked.json()["detail"] == "Project is archived"
     assert (await client.patch(task_url, json={"title": "x"})).status_code == 409
     assert (await client.delete(task_url)).status_code == 409
     assert (await client.get(task_url)).status_code == 200

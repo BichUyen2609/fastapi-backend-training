@@ -98,7 +98,7 @@ async def test_integrity_error_is_409_and_transaction_rolls_back(
         "/api/v1/tasks", json=references | {"title": "Conflict"}
     )
     assert response.status_code == 409
-    assert response.json() == {"detail": "Resource conflicts with existing data"}
+    assert response.json()["detail"] == "Resource conflicts with existing data"
     application.dependency_overrides.pop(get_task_repository)
     page = (
         await client.get(

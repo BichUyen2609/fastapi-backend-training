@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = Field(
         default=ACCESS_TOKEN_EXPIRE_MINUTES, ge=1, le=MAX_ACCESS_TOKEN_EXPIRE_MINUTES
     )
+    cors_origins: list[str] = Field(default_factory=list)
     refresh_token_expire_days: int = Field(
         default=REFRESH_TOKEN_EXPIRE_DAYS, ge=1, le=MAX_REFRESH_TOKEN_EXPIRE_DAYS
     )

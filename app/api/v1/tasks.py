@@ -1,14 +1,23 @@
-from fastapi import APIRouter, Response, status
+from typing import Annotated
+
+from fastapi import APIRouter, Query, Response, status
 
 from app.api.dependencies import TaskServiceDependency
 from app.api.params import RESOURCE_ERRORS, PageLimit, PageNumber
 from app.core.constants import API_V1_PREFIX, DEFAULT_LIMIT, DEFAULT_PAGE
 from app.models.entities import Task
 from app.schemas.base import ResourceId
-from app.schemas.task import TaskCreate, TaskPage, TaskResponse, TaskUpdate
+from app.schemas.task import (
+    TaskCreate,
+    TaskFilters,
+    TaskPage,
+    TaskResponse,
+    TaskUpdate,
+)
 
 router = APIRouter(tags=["Tasks"])
 error_responses = RESOURCE_ERRORS
+FilterQuery = Annotated[TaskFilters, Query()]
 
 
 @router.post(
@@ -31,11 +40,12 @@ async def create_task(
 @router.get("/tasks", response_model=TaskPage, responses=error_responses)
 async def list_tasks(
     service: TaskServiceDependency,
+    filters: FilterQuery,
     page: PageNumber = DEFAULT_PAGE,
     limit: PageLimit = DEFAULT_LIMIT,
     project_id: ResourceId | None = None,
 ) -> TaskPage:
-    return await service.list_tasks(page, limit, project_id)
+    return await service.list_tasks(page, limit, project_id, filters)
 
 
 @router.get(
@@ -44,10 +54,11 @@ async def list_tasks(
 async def list_project_tasks(
     project_id: ResourceId,
     service: TaskServiceDependency,
+    filters: FilterQuery,
     page: PageNumber = DEFAULT_PAGE,
     limit: PageLimit = DEFAULT_LIMIT,
 ) -> TaskPage:
-    return await service.list_tasks(page, limit, project_id)
+    return await service.list_tasks(page, limit, project_id, filters)
 
 
 @router.get("/tasks/{task_id}", response_model=TaskResponse, responses=error_responses)
