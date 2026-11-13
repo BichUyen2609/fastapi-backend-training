@@ -2,7 +2,7 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.constants import MAX_ENTITY_ID
+from app.core.constants import MAX_ENTITY_ID, NON_NULL_FIELD_MESSAGE
 
 ResourceId = Annotated[int, Field(gt=0, le=MAX_ENTITY_ID)]
 
@@ -17,3 +17,9 @@ class BaseSchema(BaseModel):
 
 class ErrorResponse(BaseSchema):
     detail: str | list[dict[str, Any]]
+
+
+def reject_null(value: object) -> object:
+    if value is None:
+        raise ValueError(NON_NULL_FIELD_MESSAGE)
+    return value

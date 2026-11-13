@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from secrets import token_urlsafe
 from typing import Annotated, Literal
 from uuid import uuid4
@@ -10,7 +11,12 @@ from pwdlib.exceptions import UnknownHashError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.core.config import Settings
-from app.core.constants import JWT_ALGORITHM, MAX_ENTITY_ID, SECONDS_PER_MINUTE
+from app.core.constants import (
+    JWT_ALGORITHM,
+    MAX_ENTITY_ID,
+    REFRESH_TOKEN_BYTES,
+    SECONDS_PER_MINUTE,
+)
 from app.core.exceptions import AuthenticationException
 
 password_hasher = PasswordHash.recommended()
@@ -85,3 +91,11 @@ def verify_password(password: str, hashed_password: str) -> bool:
         return password_hasher.verify(password, hashed_password)
     except UnknownHashError:
         return False
+
+
+def generate_refresh_token() -> str:
+    return token_urlsafe(REFRESH_TOKEN_BYTES)
+
+
+def hash_token(token: str) -> str:
+    return sha256(token.encode("utf-8")).hexdigest()

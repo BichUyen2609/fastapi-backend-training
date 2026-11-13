@@ -1,8 +1,10 @@
-# TaskHub — Ngày 3: Authentication và JWT
+# TaskHub — Ngày 4: Authorization, RBAC và Workspace
 
 Backend quản lý công việc dùng FastAPI, Pydantic v2, SQLAlchemy 2.x async và
-PostgreSQL 16. Day 3 bổ sung đăng ký, đăng nhập, access token JWT, profile hiện tại
-và bảo vệ CRUD Task bằng quyền workspace trên nền database của Day 2.
+PostgreSQL 16. Day 3 bổ sung đăng ký, đăng nhập, access token JWT và bảo vệ CRUD
+Task. Day 4 hoàn thiện vòng đời phiên đăng nhập (refresh token xoay vòng, logout),
+quản lý profile/mật khẩu, CRUD Workspace, mời/xóa member, CRUD Project có archive,
+và gom toàn bộ phân quyền ADMIN/OWNER/EDITOR/VIEWER về một chỗ.
 
 ## Cài đặt và chạy
 
@@ -58,8 +60,12 @@ app/
 ├── seed.py
 ├── api/
 │   ├── dependencies.py
+│   ├── params.py
 │   └── v1/
 │       ├── auth.py
+│       ├── users.py
+│       ├── workspaces.py
+│       ├── projects.py
 │       └── tasks.py
 ├── core/
 │   ├── config.py
@@ -70,19 +76,30 @@ app/
 ├── models/entities.py
 ├── repositories/
 │   ├── base.py
+│   ├── access.py
 │   ├── auth.py
+│   ├── workspace.py
+│   ├── project.py
 │   └── task.py
 ├── schemas/
 │   ├── base.py
 │   ├── auth.py
+│   ├── workspace.py
+│   ├── project.py
 │   └── task.py
 └── services/
+    ├── base.py
     ├── auth.py
+    ├── user.py
+    ├── workspace.py
+    ├── project.py
     └── task.py
 migrations/
 ├── env.py
 ├── script.py.mako
-└── versions/0001_create_taskhub_schema.py
+└── versions/
+    ├── 0001_create_taskhub_schema.py
+    └── 0002_create_refresh_tokens.py
 tests/
 ```
 
@@ -99,8 +116,9 @@ startup; schema được quản lý bằng Alembic. Router, service và reposito
 
 ## Model và migration
 
-Định nghĩa đủ 8 bảng: `users`, `workspaces`, `workspace_members`, `projects`,
-`tasks`, `labels`, `task_labels`, `comments`. Enum đặt trong `core/enums.py`; giới
+Định nghĩa 8 bảng nghiệp vụ: `users`, `workspaces`, `workspace_members`,
+`projects`, `tasks`, `labels`, `task_labels`, `comments`, cùng bảng
+`refresh_tokens` (Day 4) lưu hash SHA-256 của refresh token. Enum đặt trong `core/enums.py`; giới
 hạn chuỗi dùng chung từ `constants.py` cho model, schema và migration.
 
 Enum dùng `native_enum=False` và `create_constraint=True`, để DB từ chối giá trị
@@ -114,6 +132,7 @@ tiếp vẫn hợp lệ. Timestamp dùng `TIMESTAMP WITH TIME ZONE`, đọc về
 | Project → task/label | CASCADE |
 | Task → comment/task-label | CASCADE |
 | User → task được assign | SET NULL |
+| User → refresh token | CASCADE |
 | User → workspace sở hữu/task đã tạo/comment đã viết | RESTRICT |
 
 Relationship dùng `passive_deletes` phù hợp với FK và `lazy="raise"` để tránh
@@ -128,13 +147,17 @@ Migration ban đầu được autogenerate từ model và đã rà lại. Khi th
 .\.venv\Scripts\python.exe -m alembic check
 ```
 
-## Authentication và phân quyền
+## Authentication và phiên đăng nhập
 
 | Method | Endpoint | Dữ liệu và kết quả |
 | --- | --- | --- |
 | POST | `/api/v1/auth/register` | JSON email/full_name/password → 201, thông tin user |
-| POST | `/api/v1/auth/login` | Form username/password → 200, access token |
+| POST | `/api/v1/auth/login` | Form username/password → 200, access + refresh token |
+| POST | `/api/v1/auth/refresh` | JSON refresh_token → 200, cặp token mới |
+| POST | `/api/v1/auth/logout` | JSON refresh_token → 204, thu hồi token |
 | GET | `/api/v1/users/me` | Bearer token → 200, profile hiện tại |
+| PATCH | `/api/v1/users/me` | JSON email/full_name → 200, profile mới |
+| POST | `/api/v1/users/me/password` | JSON current_password/new_password → 204 |
 
 Register chuẩn hóa email về chữ thường, trim họ tên nhưng giữ nguyên khoảng
 trắng trong password. Password dài 8–128 ký tự, được hash Argon2 trong thread
@@ -153,24 +176,72 @@ buộc. Token mặc định hết hạn sau 15 phút, cấu hình bằng
 `ACCESS_TOKEN_EXPIRE_MINUTES`. Mỗi request đọc lại user và trạng thái active từ DB;
 role trong token không được dùng để nâng quyền.
 
-| Vai trò | Đọc Task | Tạo/sửa/xóa Task |
-| --- | --- | --- |
-| ADMIN | Tất cả workspace | Tất cả workspace |
-| Workspace owner hoặc membership OWNER | Workspace của mình | Workspace của mình |
-| EDITOR | Workspace được tham gia | Workspace được tham gia |
-| VIEWER | Workspace được tham gia | 403 |
-| Không tham gia workspace | 403 khi truy cập trực tiếp | 403 |
+Refresh token là chuỗi ngẫu nhiên 48 byte; DB chỉ lưu hash SHA-256 kèm
+`expires_at`/`revoked_at`, mặc định sống 7 ngày (`REFRESH_TOKEN_EXPIRE_DAYS`).
+Mỗi lần refresh, token cũ bị thu hồi bằng một câu `UPDATE ... WHERE revoked_at IS
+NULL` nguyên tử rồi mới cấp token mới. Dùng lại token đã thu hồi được coi là token
+bị lộ: mọi refresh token còn hiệu lực của user bị thu hồi và trả 401. Logout luôn
+trả 204 để không lộ token nào tồn tại. Validation error của field password/token
+không phản chiếu giá trị đã gửi.
 
-GET `/tasks` chỉ trả task và total thuộc các workspace user được đọc. Khi đổi
-project của task, phải có quyền sửa cả project nguồn và đích. Assignee phải là
-user active và thuộc workspace đích. Mọi endpoint Task yêu cầu Bearer token;
-token thiếu/sai/hết hạn trả 401 với `WWW-Authenticate: Bearer`.
+PATCH `/users/me` chỉ nhận `email`, `full_name`, không nhận null; email được chuẩn
+hóa và trùng thì trả 409. Đổi mật khẩu yêu cầu mật khẩu hiện tại (sai trả 400),
+mật khẩu mới phải khác mật khẩu cũ và mọi refresh token bị thu hồi; access token
+đã cấp tự hết hạn theo thời gian sống ngắn.
+
+## Phân quyền (RBAC)
+
+Quyền hiệu lực trong workspace: `owner_id` của workspace là OWNER, còn lại lấy
+role trong `workspace_members`. ADMIN hệ thống bỏ qua kiểm tra. Mọi service dùng
+chung `ensure_role(actor, role, minimum)` với thứ bậc VIEWER < EDITOR < OWNER nên
+quy tắc chỉ định nghĩa một lần; truy vấn quyền nằm trong `AccessRepository`.
+
+| Hành động | Quyền tối thiểu |
+| --- | --- |
+| Tạo workspace | User đăng nhập (trở thành OWNER) |
+| Xem workspace, danh sách member, danh sách project | VIEWER |
+| Sửa/xóa workspace, mời/đổi role/xóa member | OWNER |
+| Rời workspace (xóa chính mình) | VIEWER |
+| Tạo/sửa/archive/restore project | EDITOR |
+| Xóa project | OWNER |
+| Đọc task | VIEWER |
+| Tạo/sửa/xóa task | EDITOR |
+
+Resource không tồn tại trả 404; tồn tại nhưng user không thuộc workspace hoặc
+thiếu quyền trả 403. `/workspaces` và `/tasks` chỉ trả dữ liệu user được đọc
+(ADMIN thấy tất cả). Khi đổi project của task, phải có quyền sửa cả project nguồn
+và đích; assignee phải là user active thuộc workspace đích. Token thiếu/sai/hết
+hạn trả 401 với `WWW-Authenticate: Bearer`.
+
+## API Workspace và Project
+
+| Method | Endpoint | Kết quả |
+| --- | --- | --- |
+| POST | `/api/v1/workspaces` | 201, kèm membership OWNER |
+| GET | `/api/v1/workspaces?page=1&limit=20` | 200, workspace user tham gia |
+| GET/PATCH/DELETE | `/api/v1/workspaces/{id}` | 200/200/204 |
+| GET | `/api/v1/workspaces/{id}/members` | 200, gồm cả owner |
+| POST | `/api/v1/workspaces/{id}/members` | 201, mời theo email, role EDITOR/VIEWER |
+| PATCH | `/api/v1/workspaces/{id}/members/{user_id}` | 200, đổi role |
+| DELETE | `/api/v1/workspaces/{id}/members/{user_id}` | 204 |
+| POST | `/api/v1/workspaces/{id}/projects` | 201 |
+| GET | `/api/v1/workspaces/{id}/projects?status=ACTIVE` | 200, phân trang |
+| GET/PATCH/DELETE | `/api/v1/projects/{id}` | 200/200/204 |
+| POST | `/api/v1/projects/{id}/archive` | 200, status ARCHIVED |
+| POST | `/api/v1/projects/{id}/restore` | 200, status ACTIVE |
+
+Không thể cấp role OWNER qua API (422); owner của workspace không thể bị xóa hay
+đổi role (409). Mời email không tồn tại hoặc tài khoản bị khóa trả 422, mời lại
+member hiện có trả 409. Khi xóa member, task trong workspace đó đang assign cho họ
+được bỏ assign; task ở workspace khác giữ nguyên. Xóa workspace cascade project,
+task, label và comment.
+
+Tên project là duy nhất trong workspace (409). Project ARCHIVED chỉ đọc: tạo, sửa,
+xóa task hoặc chuyển task vào project đó trả 409 cho đến khi restore.
 
 Thử trên Swagger: mở `/docs` → **Authorize**, nhập `DEMO_EMAIL` vào username và
-`DEMO_PASSWORD` vào password từ `.env`. User seed là owner của project demo.
-Đăng ký user mới không tự tạo workspace/project; các API workspace và mời member
-được bổ sung ở session sau. Refresh token/logout, middleware và Redis nằm ngoài
-phạm vi Day 3 này.
+`DEMO_PASSWORD` vào password từ `.env`. User seed là owner của workspace/project
+demo. Middleware, Redis cache, Label/Comment API nằm ngoài phạm vi Day 4.
 
 ## API Task
 
@@ -212,7 +283,8 @@ do server quản lý bị từ chối. `{}` không thay đổi task hay `updated
 UPDATE chỉ ghi các cột client gửi, tránh ghi đè field khác từ snapshot cũ khi có
 PATCH đồng thời. ID và `created_at` bất biến; `created_by` không sửa qua PATCH.
 
-Domain exception được handler tập trung chuyển thành 401 khi xác thực thất bại,
+Domain exception được một handler chung chuyển thành 400 khi vi phạm quy tắc
+nghiệp vụ, 401 khi xác thực thất bại,
 403 khi thiếu quyền, 404 khi không tìm thấy,
 422 khi tham chiếu đầu vào không hợp lệ, 409 khi xung đột FK/unique lúc ghi DB.
 Transaction lỗi được rollback; API không lộ chi tiết SQL. Swagger/ReDoc mô tả
@@ -236,8 +308,12 @@ Test PostgreSQL thật kiểm tra default SQL, enum, FK/index, CASCADE/SET NULL/
 rollback nhiều bước, mapping IntegrityError, dependency override, pagination,
 snapshot cũ, nullable PATCH và dữ liệu giữa các app instance. Test Day 3 kiểm tra
 JWT giả/hết hạn/thiếu claim, khóa user, quyền workspace, giả mạo created_by và
-đăng ký trùng email. CI chạy PostgreSQL 16,
+đăng ký trùng email. Test Day 4 kiểm tra refresh token xoay vòng, dùng lại, hết
+hạn, logout; đổi mật khẩu thu hồi phiên; PATCH profile; ma trận quyền
+VIEWER/EDITOR/OWNER/ADMIN/người ngoài cho workspace, member và project; khóa
+owner; bỏ assign khi xóa member và chặn ghi task trong project archived.
+CI chạy PostgreSQL 16,
 Alembic upgrade/check, Ruff, mypy strict và pytest trên Python 3.11/3.12.
 
-Nhánh Day 3 được tạo từ main sau khi merge đầy đủ Day 1 và Day 2. Các phần nghiệp
-vụ còn lại trong lịch Day 4–7 được giữ cho các session tiếp theo.
+Nhánh Day 4 được tạo từ nhánh Day 3. Middleware, caching Redis, Label/Comment,
+background task và Docker cho app được giữ cho các session tiếp theo.

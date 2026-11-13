@@ -7,6 +7,8 @@ from app.core.constants import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
     JWT_SECRET_MIN_BYTES,
     MAX_ACCESS_TOKEN_EXPIRE_MINUTES,
+    MAX_REFRESH_TOKEN_EXPIRE_DAYS,
+    REFRESH_TOKEN_EXPIRE_DAYS,
 )
 
 
@@ -28,6 +30,9 @@ class Settings(BaseSettings):
     jwt_audience: str = "taskhub-api"
     access_token_expire_minutes: int = Field(
         default=ACCESS_TOKEN_EXPIRE_MINUTES, ge=1, le=MAX_ACCESS_TOKEN_EXPIRE_MINUTES
+    )
+    refresh_token_expire_days: int = Field(
+        default=REFRESH_TOKEN_EXPIRE_DAYS, ge=1, le=MAX_REFRESH_TOKEN_EXPIRE_DAYS
     )
 
     @field_validator("jwt_secret")

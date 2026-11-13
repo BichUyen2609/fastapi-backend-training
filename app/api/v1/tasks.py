@@ -1,33 +1,14 @@
-from typing import Annotated
-
-from fastapi import APIRouter, Query, Response, status
+from fastapi import APIRouter, Response, status
 
 from app.api.dependencies import TaskServiceDependency
-from app.core.constants import (
-    API_V1_PREFIX,
-    DEFAULT_LIMIT,
-    DEFAULT_PAGE,
-    MAX_ENTITY_ID,
-    MAX_LIMIT,
-)
+from app.api.params import RESOURCE_ERRORS, PageLimit, PageNumber
+from app.core.constants import API_V1_PREFIX, DEFAULT_LIMIT, DEFAULT_PAGE
 from app.models.entities import Task
-from app.schemas.base import ErrorResponse, ResourceId
+from app.schemas.base import ResourceId
 from app.schemas.task import TaskCreate, TaskPage, TaskResponse, TaskUpdate
 
 router = APIRouter(tags=["Tasks"])
-PageNumber = Annotated[int, Query(ge=1, le=MAX_ENTITY_ID)]
-PageLimit = Annotated[int, Query(ge=1, le=MAX_LIMIT)]
-error_responses: dict[int | str, dict[str, object]] = {
-    status.HTTP_404_NOT_FOUND: {
-        "model": ErrorResponse,
-        "description": "Resource not found",
-    },
-    status.HTTP_409_CONFLICT: {"model": ErrorResponse, "description": "Data conflict"},
-    status.HTTP_422_UNPROCESSABLE_CONTENT: {
-        "model": ErrorResponse,
-        "description": "Invalid input or reference",
-    },
-}
+error_responses = RESOURCE_ERRORS
 
 
 @router.post(
