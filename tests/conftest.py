@@ -45,6 +45,8 @@ def test_settings() -> Settings:
             "jwt_secret": SecretStr(token_urlsafe(48)),
             "redis_url": None,
             "cache_namespace": f"test_{uuid4().hex}",
+            "environment": "testing",
+            "notifications_enabled": False,
         }
     )
 

@@ -18,15 +18,21 @@ from app.schemas.task import (
     TaskUpdate,
 )
 from app.services.base import authorize_project, transaction
+from app.services.notification import AssignmentNotifier, TaskAssignment
 
 
 class TaskService:
     def __init__(
-        self, repository: TaskRepository, actor: User, cache: TaskCache | None = None
+        self,
+        repository: TaskRepository,
+        actor: User,
+        cache: TaskCache | None = None,
+        notifier: AssignmentNotifier | None = None,
     ) -> None:
         self.repository = repository
         self.actor = actor
         self.cache = cache
+        self.notifier = notifier
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[None]:
@@ -113,15 +119,20 @@ class TaskService:
             task = await self.repository.create(
                 data.model_dump() | {"created_by": self.actor.id}
             )
+            assignment = await self.assignment_event(task)
         await self.repository.session.refresh(task)
+        if self.notifier is not None:
+            self.notifier.schedule(assignment)
         return task
 
     async def update_task(self, task_id: int, data: TaskUpdate) -> Task:
         changes = data.model_dump(exclude_unset=True)
+        assignment = None
         async with self.transaction():
             task = await self.repository.get(task_id)
             if task is None:
                 raise NotFoundException()
+            previous_assignee = task.assignee_id
             await self.authorize_project(task.project_id, write=True)
             target_project = (
                 data.project_id if data.project_id is not None else task.project_id
@@ -142,8 +153,31 @@ class TaskService:
                     raise NotFoundException()
                 if moved:
                     await self.repository.clear_labels(task_id)
+                if task.assignee_id != previous_assignee:
+                    assignment = await self.assignment_event(task)
         await self.repository.session.refresh(task)
+        if self.notifier is not None:
+            self.notifier.schedule(assignment)
         return task
+
+    async def assignment_event(self, task: Task) -> TaskAssignment | None:
+        if (
+            self.notifier is None
+            or not self.notifier.settings.notifications_enabled
+            or task.assignee_id is None
+        ):
+            return None
+        recipient = await self.repository.session.get(User, task.assignee_id)
+        if recipient is None:
+            return None
+        return TaskAssignment(
+            task_id=task.id,
+            project_id=task.project_id,
+            assignee_id=recipient.id,
+            recipient=recipient.email,
+            title=task.title,
+            assigned_by=self.actor.full_name,
+        )
 
     async def delete_task(self, task_id: int) -> None:
         async with self.transaction():

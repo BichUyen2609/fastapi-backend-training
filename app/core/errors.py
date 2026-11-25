@@ -93,6 +93,7 @@ async def handle_database_unavailable(
         "Database unavailable request_id=%s error=%s",
         getattr(request.state, "request_id", None),
         type(exc.orig).__name__,
+        extra={"request_id": getattr(request.state, "request_id", None)},
     )
     return error_response(
         request,
@@ -110,6 +111,7 @@ async def handle_unexpected_error(request: Request, exc: Exception) -> JSONRespo
         request.method,
         request.url.path,
         exc_info=exc,
+        extra={"request_id": getattr(request.state, "request_id", None)},
     )
     return error_response(
         request,
