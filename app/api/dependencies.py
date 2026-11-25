@@ -5,6 +5,7 @@ from fastapi import Depends, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.cache import TaskCache
 from app.core.config import Settings
 from app.core.constants import API_V1_PREFIX
 from app.core.exceptions import AuthenticationException
@@ -77,11 +78,16 @@ def get_task_repository(session: SessionDependency) -> TaskRepository:
     return TaskRepository(session)
 
 
+def get_task_cache(request: Request) -> TaskCache:
+    return cast(TaskCache, request.app.state.task_cache)
+
+
 def get_task_service(
     repository: Annotated[TaskRepository, Depends(get_task_repository)],
     user: CurrentUser,
+    cache: Annotated[TaskCache, Depends(get_task_cache)],
 ) -> TaskService:
-    return TaskService(repository, user)
+    return TaskService(repository, user, cache)
 
 
 def get_workspace_service(

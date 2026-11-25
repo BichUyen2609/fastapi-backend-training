@@ -39,12 +39,14 @@ async def create_task(
 
 @router.get("/tasks", response_model=TaskPage, responses=error_responses)
 async def list_tasks(
+    response: Response,
     service: TaskServiceDependency,
     filters: FilterQuery,
     page: PageNumber = DEFAULT_PAGE,
     limit: PageLimit = DEFAULT_LIMIT,
     project_id: ResourceId | None = None,
 ) -> TaskPage:
+    response.headers["Cache-Control"] = "private, no-store"
     return await service.list_tasks(page, limit, project_id, filters)
 
 
@@ -53,11 +55,13 @@ async def list_tasks(
 )
 async def list_project_tasks(
     project_id: ResourceId,
+    response: Response,
     service: TaskServiceDependency,
     filters: FilterQuery,
     page: PageNumber = DEFAULT_PAGE,
     limit: PageLimit = DEFAULT_LIMIT,
 ) -> TaskPage:
+    response.headers["Cache-Control"] = "private, no-store"
     return await service.list_tasks(page, limit, project_id, filters)
 
 

@@ -3,10 +3,12 @@ from contextlib import asynccontextmanager
 
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.core.cache import TaskCache
 from app.core.constants import INVALID_ASSIGNEE
 from app.core.enums import UserRole
 from app.core.exceptions import InvalidReferenceException, NotFoundException
 from app.models.entities import Task, User
+from app.repositories.access import ProjectAccess
 from app.repositories.task import TaskRepository
 from app.schemas.task import (
     TaskCreate,
@@ -19,9 +21,12 @@ from app.services.base import authorize_project, transaction
 
 
 class TaskService:
-    def __init__(self, repository: TaskRepository, actor: User) -> None:
+    def __init__(
+        self, repository: TaskRepository, actor: User, cache: TaskCache | None = None
+    ) -> None:
         self.repository = repository
         self.actor = actor
+        self.cache = cache
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[None]:
@@ -30,8 +35,8 @@ class TaskService:
 
     async def authorize_project(
         self, project_id: int, *, write: bool = False, input_reference: bool = False
-    ) -> None:
-        await authorize_project(
+    ) -> ProjectAccess:
+        return await authorize_project(
             self.repository,
             self.actor,
             project_id,
@@ -57,6 +62,16 @@ class TaskService:
         filters: TaskFilters | None = None,
     ) -> TaskPage:
         criteria = filters or TaskFilters()
+        cache_key = None
+        if project_id is not None:
+            access = await self.authorize_project(project_id)
+            if self.cache is not None:
+                cache_key = self.cache.key(
+                    project_id, access.tasks_version, page, limit, criteria
+                )
+                cached = await self.cache.get(cache_key)
+                if cached is not None:
+                    return cached
         conditions: tuple[ColumnElement[bool], ...] = tuple(
             condition
             for value, condition in (
@@ -67,19 +82,20 @@ class TaskService:
             )
             if value is not None
         )
-        if project_id is not None:
-            await self.authorize_project(project_id)
         if self.actor.role != UserRole.ADMIN:
             conditions += (
                 Task.project_id.in_(self.repository.visible_projects(self.actor.id)),
             )
         tasks, total = await self.repository.paginate(page, limit, conditions)
-        return TaskPage(
+        result = TaskPage(
             items=[TaskResponse.model_validate(task) for task in tasks],
             total=total,
             page=page,
             limit=limit,
         )
+        if cache_key is not None and self.cache is not None:
+            await self.cache.set(cache_key, result)
+        return result
 
     async def get_task(self, task_id: int) -> Task:
         task = await self.repository.get(task_id)

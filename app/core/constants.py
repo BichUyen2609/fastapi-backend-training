@@ -11,6 +11,10 @@ SECURITY_HEADERS: Final = {
     "Referrer-Policy": "no-referrer",
 }
 CORS_MAX_AGE_SECONDS: Final = 600
+TASK_CACHE_TTL_SECONDS: Final = 60
+MAX_CACHE_TTL_SECONDS: Final = 3_600
+REDIS_TIMEOUT_SECONDS: Final = 0.2
+TASK_CACHE_NAMESPACE: Final = "taskhub"
 
 TITLE_MIN_LENGTH: Final = 1
 TITLE_MAX_LENGTH: Final = 200
