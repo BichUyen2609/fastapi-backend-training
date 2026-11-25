@@ -16,6 +16,7 @@ class ProjectAccess(NamedTuple):
     workspace_id: int
     status: ProjectStatus
     role: WorkspaceRole | None
+    tasks_version: int
 
 
 def effective_role(
@@ -56,6 +57,7 @@ class AccessRepository:
             select(
                 Project.workspace_id,
                 Project.status,
+                Project.tasks_version,
                 Workspace.owner_id,
                 WorkspaceMember.role,
             )
@@ -77,6 +79,7 @@ class AccessRepository:
             row.workspace_id,
             row.status,
             effective_role(row.owner_id, user_id, row.role),
+            row.tasks_version,
         )
 
     async def task_project(self, task_id: int) -> int | None:

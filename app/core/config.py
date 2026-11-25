@@ -1,14 +1,18 @@
 from functools import lru_cache
 
-from pydantic import Field, PostgresDsn, SecretStr, field_validator
+from pydantic import Field, PostgresDsn, RedisDsn, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.constants import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
     JWT_SECRET_MIN_BYTES,
     MAX_ACCESS_TOKEN_EXPIRE_MINUTES,
+    MAX_CACHE_TTL_SECONDS,
     MAX_REFRESH_TOKEN_EXPIRE_DAYS,
+    REDIS_TIMEOUT_SECONDS,
     REFRESH_TOKEN_EXPIRE_DAYS,
+    TASK_CACHE_NAMESPACE,
+    TASK_CACHE_TTL_SECONDS,
 )
 
 
@@ -23,6 +27,15 @@ class Settings(BaseSettings):
     database_url: PostgresDsn
     test_database_url: PostgresDsn | None = None
     database_echo: bool = False
+    redis_url: RedisDsn | None = Field(default=None, repr=False)
+    test_redis_url: RedisDsn | None = Field(default=None, repr=False)
+    cache_ttl_seconds: int = Field(
+        default=TASK_CACHE_TTL_SECONDS, gt=0, le=MAX_CACHE_TTL_SECONDS
+    )
+    cache_namespace: str = Field(
+        default=TASK_CACHE_NAMESPACE, pattern=r"^[A-Za-z0-9_-]{1,64}$"
+    )
+    redis_timeout_seconds: float = Field(default=REDIS_TIMEOUT_SECONDS, gt=0, le=5)
     demo_email: str | None = None
     demo_password: SecretStr | None = None
     jwt_secret: SecretStr | None = None

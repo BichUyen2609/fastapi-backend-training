@@ -14,6 +14,7 @@ from app.api.v1.projects import router as projects_router
 from app.api.v1.tasks import router as tasks_router
 from app.api.v1.users import router as users_router
 from app.api.v1.workspaces import router as workspaces_router
+from app.core.cache import TaskCache
 from app.core.config import Settings, get_settings
 from app.core.constants import (
     API_V1_PREFIX,
@@ -35,14 +36,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = app.state.settings
     settings.signing_key()
     database = Database(settings)
+    cache = TaskCache(settings)
     try:
         async with database.engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
         app.state.database = database
+        app.state.task_cache = cache
         logger.info("Starting %s", APP_NAME)
         yield
     finally:
-        await database.close()
+        try:
+            await cache.close()
+        finally:
+            await database.close()
         logger.info("Stopping %s", APP_NAME)
 
 

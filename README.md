@@ -1,4 +1,4 @@
-# TaskHub — Ngày 5: Middleware và Exception Handling
+# TaskHub — Ngày 6: Redis caching
 
 Backend quản lý công việc dùng FastAPI, Pydantic v2, SQLAlchemy 2.x async và
 PostgreSQL 16. Day 3 bổ sung đăng ký, đăng nhập, access token JWT và bảo vệ CRUD
@@ -8,10 +8,12 @@ và gom toàn bộ phân quyền ADMIN/OWNER/EDITOR/VIEWER về một chỗ. Day
 middleware (request ID, access log, thời gian xử lý, security header, CORS), xử lý
 lỗi tập trung với một định dạng response duy nhất, API Label/Comment và lọc task
 theo status, priority, assignee.
+Day 6 cache danh sách task theo project bằng Redis 7, giữ nguyên phân quyền và
+tự vô hiệu hóa cache khi dữ liệu thay đổi, kể cả khi Redis tạm mất kết nối.
 
 ## Cài đặt và chạy
 
-Yêu cầu Python 3.11+ và PostgreSQL 16. Có thể dùng Docker Compose để chạy DB:
+Yêu cầu Python 3.11+, PostgreSQL 16 và Redis 7. Docker Compose chạy DB và Redis:
 
 ```powershell
 python -m venv .venv
@@ -24,7 +26,7 @@ Copy-Item .env.example .env
 Giữ khóa này riêng cho từng môi trường; `.env` đã được Git ignore. Sau đó chạy:
 
 ```powershell
-docker compose up -d --wait db
+docker compose up -d --wait db redis
 docker compose exec db createdb -U taskhub taskhub_test
 .\.venv\Scripts\python.exe -m alembic upgrade head
 .\.venv\Scripts\python.exe -m alembic check
@@ -35,6 +37,8 @@ docker compose exec db createdb -U taskhub taskhub_test
 Chỉ cần tạo `taskhub_test` một lần. Nếu dùng PostgreSQL đã cài sẵn, tạo hai DB riêng
 `taskhub` và `taskhub_test`, rồi cập nhật hai URL trong `.env`. Trên Linux/macOS,
 thay `.\.venv\Scripts\python.exe` bằng `.venv/bin/python`.
+Nếu cập nhật từ Day 5, cài lại dependency, thêm các biến Redis từ `.env.example`,
+khởi động Redis rồi chạy `alembic upgrade head` trước khi khởi động API.
 
 - Swagger UI: <http://127.0.0.1:8000/docs>
 - ReDoc: <http://127.0.0.1:8000/redoc>
@@ -74,6 +78,7 @@ app/
 │       └── comments.py
 ├── core/
 │   ├── config.py
+│   ├── cache.py
 │   ├── constants.py
 │   ├── enums.py
 │   ├── errors.py
@@ -112,7 +117,8 @@ migrations/
 ├── script.py.mako
 └── versions/
     ├── 0001_create_taskhub_schema.py
-    └── 0002_create_refresh_tokens.py
+    ├── 0002_create_refresh_tokens.py
+    └── 0003_version_project_task_cache.py
 tests/
 ```
 
@@ -307,6 +313,48 @@ do server quản lý bị từ chối. `{}` không thay đổi task hay `updated
 UPDATE chỉ ghi các cột client gửi, tránh ghi đè field khác từ snapshot cũ khi có
 PATCH đồng thời. ID và `created_at` bất biến; `created_by` không sửa qua PATCH.
 
+## Redis cache (Day 6)
+
+`GET /api/v1/projects/{project_id}/tasks` và `GET /api/v1/tasks?project_id=...`
+dùng chung cache. Danh sách `/tasks` không có project vẫn query DB để giữ phạm vi
+quyền theo user. Authentication và quyền workspace được kiểm tra trong DB trước
+mỗi lần đọc cache; member bị xóa, user bị khóa hoặc project bị xóa không dùng
+được dữ liệu đã cache. Response HTTP có `Cache-Control: private, no-store`;
+Redis là cache nội bộ của server.
+
+Cache-aside: đọc Redis trước, cache miss thì query repository và lưu toàn bộ
+`items`, `total`, `page`, `limit` dưới dạng JSON có TTL. Key gồm namespace, phiên
+bản schema cache, project, phiên bản dữ liệu và hash của page/limit/status/
+priority/assignee_id đã validate. Các bộ lọc và các trang không dùng nhầm kết quả
+của nhau. Cache hit bỏ qua truy vấn task và đếm total, vẫn kiểm tra quyền.
+
+Migration `0003` thêm `projects.tasks_version` (`BIGINT NOT NULL DEFAULT 0`) và
+trigger PostgreSQL tăng phiên bản khi task được thêm, sửa hoặc xóa. Chuyển task
+tăng phiên bản cả project nguồn và đích. Trigger chạy cùng transaction ghi nên
+rollback không làm đổi phiên bản; xóa member/bỏ assign hàng loạt, FK `SET NULL`
+và SQL trực tiếp cũng làm mất hiệu lực cache. Hai project được khóa theo thứ tự
+ID khi chuyển task; khóa `NO KEY UPDATE` tương thích với khóa FK khi tạo task.
+Downgrade xóa đủ trigger, function và column.
+
+Request chỉ đọc key của phiên bản hiện tại. Một request cũ điền cache muộn chỉ
+ghi vào key cũ; dữ liệu đó không được request mới dùng lại và tự hết hạn theo
+TTL. Không dùng `KEYS`, không xóa toàn Redis, không cần gọi Redis trong transaction
+ghi. Cách này vẫn bảo đảm request sau một lần ghi thành công đọc dữ liệu mới khi
+Redis phục hồi. Raw SQL vẫn phải giữ trigger được bật.
+
+| Biến cấu hình | Giá trị mẫu | Ý nghĩa |
+| --- | --- | --- |
+| `REDIS_URL` | `redis://127.0.0.1:6379/0` | Redis dành cho app |
+| `TEST_REDIS_URL` | `redis://127.0.0.1:6379/15` | Redis DB riêng dành cho test |
+| `CACHE_NAMESPACE` | `taskhub` | Tách key giữa môi trường dùng chung Redis |
+| `CACHE_TTL_SECONDS` | `60` | TTL 1–3.600 giây |
+| `REDIS_TIMEOUT_SECONDS` | `0.2` | Timeout kết nối/lệnh, không retry kéo dài |
+
+Không khai báo `REDIS_URL` thì tắt cache. Redis lỗi/timeout hoặc payload cache
+hỏng thì đọc DB và trả response bình thường; log không chứa URL, token hay payload.
+Client Redis dùng pool async theo lifespan và được đóng khi app dừng. Redis local
+trong Compose chỉ bind loopback, giới hạn 128 MB với chính sách `allkeys-lru`.
+
 ## API Label và Comment
 
 | Method | Endpoint | Kết quả |
@@ -399,8 +447,13 @@ Day 5 kiểm tra request ID (sinh mới, nhận từ client, thay giá trị kh�
 security header, access log, CORS, định dạng lỗi 404/405/422/401, lỗi 500 không lộ
 chi tiết, 503 khi mất DB, CRUD và phân quyền Label/Comment, gán label khác project,
 gỡ label khi chuyển task và lọc task theo từng tiêu chí lẫn kết hợp.
-CI chạy PostgreSQL 16,
-Alembic upgrade/check, Ruff, mypy strict và pytest trên Python 3.11/3.12.
+Test Day 6 dùng Redis thật với namespace ngẫu nhiên mỗi test, xóa đúng key của
+test bằng SCAN, không FLUSHDB và không dùng Redis DB dev. Kiểm tra cache hit bỏ
+qua truy vấn task, TTL, key theo filter/page/project, create/update/delete/move,
+rollback, thay đổi assignee từ membership/FK, phân quyền trên cache nóng, payload
+hỏng, cache fill muộn và ghi dữ liệu khi Redis lỗi.
+CI chạy PostgreSQL 16, Redis 7, Alembic upgrade/check, Ruff, mypy strict và pytest
+trên Python 3.11/3.12.
 
-Nhánh Day 5 được tạo từ nhánh Day 4. Caching Redis, background task và Docker cho
-app được giữ cho các session tiếp theo.
+Nhánh Day 6 được tạo từ nhánh Day 5. Background task và Docker cho app được giữ
+cho session tiếp theo.

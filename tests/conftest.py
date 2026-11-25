@@ -43,6 +43,8 @@ def test_settings() -> Settings:
         | {
             "database_url": settings.test_database_url,
             "jwt_secret": SecretStr(token_urlsafe(48)),
+            "redis_url": None,
+            "cache_namespace": f"test_{uuid4().hex}",
         }
     )
 

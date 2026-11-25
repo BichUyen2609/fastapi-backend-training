@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Date,
@@ -144,6 +145,7 @@ class Project(Entity):
     )
     name: Mapped[str] = mapped_column(String(NAME_MAX_LENGTH))
     description: Mapped[str | None] = mapped_column(String(DESCRIPTION_MAX_LENGTH))
+    tasks_version: Mapped[int] = mapped_column(BigInteger, server_default="0")
     status: Mapped[ProjectStatus] = mapped_column(
         Enum(
             ProjectStatus,
