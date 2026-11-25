@@ -2,13 +2,12 @@ from app.core.constants import (
     LABEL_NAME_TAKEN,
     LABEL_NOT_FOUND,
     LABEL_PROJECT_MISMATCH,
-    TASK_NOT_FOUND,
 )
 from app.core.exceptions import InvalidReferenceException, NotFoundException
 from app.models.entities import Label, User
 from app.repositories.label import LabelRepository
 from app.schemas.label import LabelCreate, LabelUpdate
-from app.services.base import authorize_project, transaction
+from app.services.base import authorize_project, require_task_project, transaction
 
 
 class LabelService:
@@ -21,12 +20,6 @@ class LabelService:
         if label is None:
             raise NotFoundException(LABEL_NOT_FOUND)
         return label
-
-    async def task_project(self, task_id: int) -> int:
-        project_id = await self.repository.task_project(task_id)
-        if project_id is None:
-            raise NotFoundException(TASK_NOT_FOUND)
-        return project_id
 
     async def create_label(self, project_id: int, data: LabelCreate) -> Label:
         async with transaction(self.repository.session, LABEL_NAME_TAKEN):
@@ -64,13 +57,13 @@ class LabelService:
             await self.repository.delete(label_id)
 
     async def task_labels(self, task_id: int) -> list[Label]:
-        project_id = await self.task_project(task_id)
+        project_id = await require_task_project(self.repository, task_id)
         await authorize_project(self.repository, self.actor, project_id)
         return await self.repository.for_task(task_id)
 
     async def attach(self, task_id: int, label_id: int) -> list[Label]:
         async with transaction(self.repository.session):
-            project_id = await self.task_project(task_id)
+            project_id = await require_task_project(self.repository, task_id)
             await authorize_project(self.repository, self.actor, project_id, write=True)
             label = await self.get_label(label_id)
             if label.project_id != project_id:
@@ -80,6 +73,6 @@ class LabelService:
 
     async def detach(self, task_id: int, label_id: int) -> None:
         async with transaction(self.repository.session):
-            project_id = await self.task_project(task_id)
+            project_id = await require_task_project(self.repository, task_id)
             await authorize_project(self.repository, self.actor, project_id, write=True)
             await self.repository.detach(task_id, label_id)

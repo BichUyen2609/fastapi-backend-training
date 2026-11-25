@@ -3,12 +3,10 @@ from sqlalchemy.sql.elements import ColumnElement
 from app.core.constants import (
     PROJECT_NAME_TAKEN,
     PROJECT_NOT_FOUND,
-    WORKSPACE_NOT_FOUND,
 )
 from app.core.enums import ProjectStatus, WorkspaceRole
 from app.core.exceptions import NotFoundException
 from app.models.entities import Project, User
-from app.repositories.access import ProjectAccess
 from app.repositories.project import ProjectRepository
 from app.schemas.project import (
     ProjectCreate,
@@ -16,7 +14,7 @@ from app.schemas.project import (
     ProjectResponse,
     ProjectUpdate,
 )
-from app.services.base import ensure_role, transaction
+from app.services.base import authorize_project, authorize_workspace, transaction
 
 
 class ProjectService:
@@ -24,24 +22,11 @@ class ProjectService:
         self.repository = repository
         self.actor = actor
 
-    async def authorize_workspace(
-        self, workspace_id: int, minimum: WorkspaceRole
-    ) -> None:
-        access = await self.repository.workspace_access(workspace_id, self.actor.id)
-        if access is None:
-            raise NotFoundException(WORKSPACE_NOT_FOUND)
-        ensure_role(self.actor, access.role, minimum)
-
-    async def authorize(self, project_id: int, minimum: WorkspaceRole) -> ProjectAccess:
-        access = await self.repository.project_access(project_id, self.actor.id)
-        if access is None:
-            raise NotFoundException(PROJECT_NOT_FOUND)
-        ensure_role(self.actor, access.role, minimum)
-        return access
-
     async def create_project(self, workspace_id: int, data: ProjectCreate) -> Project:
         async with transaction(self.repository.session, PROJECT_NAME_TAKEN):
-            await self.authorize_workspace(workspace_id, WorkspaceRole.EDITOR)
+            await authorize_workspace(
+                self.repository, self.actor, workspace_id, WorkspaceRole.EDITOR
+            )
             project = await self.repository.create(
                 data.model_dump() | {"workspace_id": workspace_id}
             )
@@ -55,7 +40,7 @@ class ProjectService:
         limit: int,
         status: ProjectStatus | None = None,
     ) -> ProjectPage:
-        await self.authorize_workspace(workspace_id, WorkspaceRole.VIEWER)
+        await authorize_workspace(self.repository, self.actor, workspace_id)
         filters: tuple[ColumnElement[bool], ...] = (
             Project.workspace_id == workspace_id,
         )
@@ -70,7 +55,7 @@ class ProjectService:
         )
 
     async def get_project(self, project_id: int) -> Project:
-        await self.authorize(project_id, WorkspaceRole.VIEWER)
+        await authorize_project(self.repository, self.actor, project_id)
         project = await self.repository.get(project_id)
         if project is None:
             raise NotFoundException(PROJECT_NOT_FOUND)
@@ -86,7 +71,9 @@ class ProjectService:
         self, project_id: int, changes: dict[str, object]
     ) -> Project:
         async with transaction(self.repository.session, PROJECT_NAME_TAKEN):
-            await self.authorize(project_id, WorkspaceRole.EDITOR)
+            await authorize_project(
+                self.repository, self.actor, project_id, minimum=WorkspaceRole.EDITOR
+            )
             project = (
                 await self.repository.update(project_id, changes)
                 if changes
@@ -98,6 +85,8 @@ class ProjectService:
 
     async def delete_project(self, project_id: int) -> None:
         async with transaction(self.repository.session):
-            await self.authorize(project_id, WorkspaceRole.OWNER)
+            await authorize_project(
+                self.repository, self.actor, project_id, minimum=WorkspaceRole.OWNER
+            )
             if not await self.repository.delete(project_id):
                 raise NotFoundException(PROJECT_NOT_FOUND)

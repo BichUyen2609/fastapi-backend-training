@@ -1,6 +1,3 @@
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
-
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.cache import TaskCache
@@ -33,11 +30,6 @@ class TaskService:
         self.actor = actor
         self.cache = cache
         self.notifier = notifier
-
-    @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[None]:
-        async with transaction(self.repository.session):
-            yield
 
     async def authorize_project(
         self, project_id: int, *, write: bool = False, input_reference: bool = False
@@ -111,7 +103,7 @@ class TaskService:
         return task
 
     async def create_task(self, data: TaskCreate) -> Task:
-        async with self.transaction():
+        async with transaction(self.repository.session):
             await self.authorize_project(
                 data.project_id, write=True, input_reference=True
             )
@@ -128,7 +120,7 @@ class TaskService:
     async def update_task(self, task_id: int, data: TaskUpdate) -> Task:
         changes = data.model_dump(exclude_unset=True)
         assignment = None
-        async with self.transaction():
+        async with transaction(self.repository.session):
             task = await self.repository.get(task_id)
             if task is None:
                 raise NotFoundException()
@@ -167,7 +159,7 @@ class TaskService:
             or task.assignee_id is None
         ):
             return None
-        recipient = await self.repository.session.get(User, task.assignee_id)
+        recipient = await self.repository.get_assignee(task.assignee_id)
         if recipient is None:
             return None
         return TaskAssignment(
@@ -180,7 +172,7 @@ class TaskService:
         )
 
     async def delete_task(self, task_id: int) -> None:
-        async with self.transaction():
+        async with transaction(self.repository.session):
             task = await self.repository.get(task_id)
             if task is None:
                 raise NotFoundException()

@@ -3,7 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Query, Response, status
 
 from app.api.dependencies import TaskServiceDependency
-from app.api.params import RESOURCE_ERRORS, PageLimit, PageNumber
+from app.api.params import RESOURCE_ERRORS, PageLimit, PageNumber, error_responses
 from app.core.constants import API_V1_PREFIX, DEFAULT_LIMIT, DEFAULT_PAGE
 from app.models.entities import Task
 from app.schemas.base import ResourceId
@@ -16,7 +16,6 @@ from app.schemas.task import (
 )
 
 router = APIRouter(tags=["Tasks"])
-error_responses = RESOURCE_ERRORS
 FilterQuery = Annotated[TaskFilters, Query()]
 
 
@@ -24,10 +23,9 @@ FilterQuery = Annotated[TaskFilters, Query()]
     "/tasks",
     response_model=TaskResponse,
     status_code=status.HTTP_201_CREATED,
-    responses={
-        code: error_responses[code]
-        for code in (status.HTTP_409_CONFLICT, status.HTTP_422_UNPROCESSABLE_CONTENT)
-    },
+    responses=error_responses(
+        status.HTTP_409_CONFLICT, status.HTTP_422_UNPROCESSABLE_CONTENT
+    ),
 )
 async def create_task(
     data: TaskCreate, response: Response, service: TaskServiceDependency
@@ -37,7 +35,7 @@ async def create_task(
     return task
 
 
-@router.get("/tasks", response_model=TaskPage, responses=error_responses)
+@router.get("/tasks", response_model=TaskPage, responses=RESOURCE_ERRORS)
 async def list_tasks(
     response: Response,
     service: TaskServiceDependency,
@@ -51,7 +49,7 @@ async def list_tasks(
 
 
 @router.get(
-    "/projects/{project_id}/tasks", response_model=TaskPage, responses=error_responses
+    "/projects/{project_id}/tasks", response_model=TaskPage, responses=RESOURCE_ERRORS
 )
 async def list_project_tasks(
     project_id: ResourceId,
@@ -65,13 +63,13 @@ async def list_project_tasks(
     return await service.list_tasks(page, limit, project_id, filters)
 
 
-@router.get("/tasks/{task_id}", response_model=TaskResponse, responses=error_responses)
+@router.get("/tasks/{task_id}", response_model=TaskResponse, responses=RESOURCE_ERRORS)
 async def get_task(task_id: ResourceId, service: TaskServiceDependency) -> Task:
     return await service.get_task(task_id)
 
 
 @router.patch(
-    "/tasks/{task_id}", response_model=TaskResponse, responses=error_responses
+    "/tasks/{task_id}", response_model=TaskResponse, responses=RESOURCE_ERRORS
 )
 async def update_task(
     task_id: ResourceId, data: TaskUpdate, service: TaskServiceDependency
@@ -83,7 +81,7 @@ async def update_task(
     "/tasks/{task_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
-    responses=error_responses,
+    responses=RESOURCE_ERRORS,
 )
 async def delete_task(task_id: ResourceId, service: TaskServiceDependency) -> Response:
     await service.delete_task(task_id)

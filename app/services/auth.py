@@ -1,7 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
 from fastapi.concurrency import run_in_threadpool
-from sqlalchemy.exc import IntegrityError
 
 from app.core.config import Settings
 from app.core.constants import (
@@ -42,19 +41,16 @@ class AuthService:
         hashed = await run_in_threadpool(
             hash_password, data.password.get_secret_value()
         )
-        try:
-            async with self.repository.session.begin():
-                if await self.repository.get_by_email(str(data.email)) is not None:
-                    raise ConflictException(EMAIL_ALREADY_REGISTERED)
-                user = await self.repository.create(
-                    {
-                        "email": str(data.email),
-                        "full_name": data.full_name,
-                        "hashed_password": hashed,
-                    }
-                )
-        except IntegrityError as exc:
-            raise ConflictException(EMAIL_ALREADY_REGISTERED) from exc
+        async with transaction(self.repository.session, EMAIL_ALREADY_REGISTERED):
+            if await self.repository.get_by_email(str(data.email)) is not None:
+                raise ConflictException(EMAIL_ALREADY_REGISTERED)
+            user = await self.repository.create(
+                {
+                    "email": str(data.email),
+                    "full_name": data.full_name,
+                    "hashed_password": hashed,
+                }
+            )
         await self.repository.session.refresh(user)
         return user
 

@@ -1,4 +1,4 @@
-from typing import Annotated, Any
+from typing import Annotated, Any, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -13,6 +13,16 @@ class BaseSchema(BaseModel):
         extra="forbid",
         from_attributes=True,
     )
+
+
+ItemT = TypeVar("ItemT", bound=BaseSchema)
+
+
+class Page(BaseSchema, Generic[ItemT]):
+    items: list[ItemT]
+    total: int
+    page: int
+    limit: int
 
 
 class ErrorResponse(BaseSchema):

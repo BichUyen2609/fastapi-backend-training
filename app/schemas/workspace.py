@@ -8,7 +8,7 @@ from app.core.constants import (
     OWNER_ROLE_NOT_ASSIGNABLE,
 )
 from app.core.enums import WorkspaceRole
-from app.schemas.base import BaseSchema, ResourceId
+from app.schemas.base import BaseSchema, Page, ResourceId
 
 WorkspaceName = Annotated[str, Field(min_length=1, max_length=NAME_MAX_LENGTH)]
 
@@ -34,11 +34,8 @@ class WorkspaceResponse(BaseSchema):
     created_at: AwareDatetime
 
 
-class WorkspacePage(BaseSchema):
-    items: list[WorkspaceResponse]
-    total: int
-    page: int
-    limit: int
+class WorkspacePage(Page[WorkspaceResponse]):
+    pass
 
 
 class MemberCreate(BaseSchema):

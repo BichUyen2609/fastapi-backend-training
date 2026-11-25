@@ -5,7 +5,7 @@ from pydantic.json_schema import SkipJsonSchema
 
 from app.core.constants import DESCRIPTION_MAX_LENGTH, NAME_MAX_LENGTH
 from app.core.enums import ProjectStatus
-from app.schemas.base import BaseSchema, ResourceId, reject_null
+from app.schemas.base import BaseSchema, Page, ResourceId, reject_null
 
 ProjectName = Annotated[str, Field(min_length=1, max_length=NAME_MAX_LENGTH)]
 ProjectDescription = Annotated[str, Field(max_length=DESCRIPTION_MAX_LENGTH)]
@@ -33,8 +33,5 @@ class ProjectResponse(BaseSchema):
     created_at: AwareDatetime
 
 
-class ProjectPage(BaseSchema):
-    items: list[ProjectResponse]
-    total: int
-    page: int
-    limit: int
+class ProjectPage(Page[ProjectResponse]):
+    pass

@@ -1,4 +1,4 @@
-# TaskHub — Ngày 7: Configuration, Docker, Logging và Background Tasks
+# TaskHub — Ngày 8 (nửa đầu): Review và Refactor
 
 Backend quản lý công việc dùng FastAPI, Pydantic v2, SQLAlchemy 2.x async và
 PostgreSQL 16. Day 3 bổ sung đăng ký, đăng nhập, access token JWT và bảo vệ CRUD
@@ -13,6 +13,44 @@ tự vô hiệu hóa cache khi dữ liệu thay đổi, kể cả khi Redis tạ
 Day 7 hoàn thiện cấu hình theo môi trường, log JSON gắn request ID, health check,
 tài liệu OpenAPI và email thông báo assign task chạy nền sau commit. Docker Compose
 chạy app, migration, PostgreSQL, Redis và Mailpit trong cùng stack.
+Nửa đầu Day 8 rà soát kiến trúc/naming, gom logic phân quyền, transaction và schema
+phân trang dùng chung; giữ nguyên contract API. Phần performance review và tối ưu
+theo số liệu được dành cho nửa sau Day 8.
+
+## Review và refactor — nửa đầu Day 8
+
+Đã rà soát luồng router → service → repository → database, schema/model, các lớp
+config, security, cache, logging và notification. Các thay đổi tập trung vào DRY
+và tính nhất quán của kiến trúc:
+
+| Phát hiện | Xử lý |
+| --- | --- |
+| Workspace/Project/Comment lặp truy vấn quyền và kiểm tra role/archive | Dùng chung `authorize_workspace`, `authorize_project` trong `services/base.py` |
+| Label/Comment lặp tra project của task và lỗi 404 | Dùng chung `require_task_project` |
+| Register tự `session.begin()`, lỗi nếu request đã có transaction | Dùng cùng `transaction()` với các service khác, giữ rollback và mapping email trùng → 409 |
+| Task có wrapper transaction chỉ gọi lại helper | Gọi trực tiếp helper chung |
+| Service Task đọc User trực tiếp bằng session | Chuyển tra assignee vào `TaskRepository.get_assignee` |
+| Bốn schema phân trang lặp `items/total/page/limit` | Kế thừa `Page[T]`, giữ tên TaskPage/ProjectPage/WorkspacePage/CommentPage |
+| Router Task đặt tên dict `error_responses`, trùng tên helper | Dùng rõ `RESOURCE_ERRORS` cho dict và `error_responses(...)` để tạo mô tả lỗi |
+
+Policy chung vẫn giữ ngoại lệ: VIEWER được xóa comment của chính mình trong
+project active; xóa comment người khác cần OWNER; project archived chặn ghi task,
+label, comment nhưng vẫn cho EDITOR quản lý/archive/restore project. ADMIN giữ
+quyền hệ thống. Role và trạng thái project được đọc từ DB ở mỗi lần kiểm tra.
+
+Đã tái hiện lỗi register trên code Day 7 và xác nhận bản sửa với cùng session có
+transaction đang mở. Test hồi quy đi qua API kiểm tra đăng ký/login sau một truy
+vấn trước, duplicate email/rollback, tác giả comment bị hạ role, project archived
+và thông điệp lỗi task không tồn tại. So sánh toàn bộ OpenAPI trước/sau cho kết
+quả giống nhau; không đổi endpoint, schema response, mã lỗi hay DB schema.
+
+Kiểm tra chất lượng gồm Ruff format/check, mypy strict, Alembic upgrade/check,
+toàn bộ pytest và CI Python 3.11/3.12 cùng smoke test Docker/SMTP. Test DB/Redis
+vẫn được tách khỏi DB dev và rollback/cleanup theo từng test.
+
+Nửa sau Day 8 còn: đo hiệu năng theo luồng, xem query plan và số truy vấn của list/
+pagination, đánh giá cache và ghi đồng thời, tối ưu dựa trên số liệu rồi kiểm tra
+toàn bộ luồng và chốt README. Nửa đầu chưa đo throughput/latency hoặc thay index.
 
 ## Cài đặt và chạy
 
@@ -556,5 +594,5 @@ CI chạy PostgreSQL 16, Redis 7, Alembic upgrade/check, Ruff, mypy strict và p
 trên Python 3.11/3.12. Job container build image thật, chạy toàn stack từ Compose,
 kiểm tra migration, UID, health/docs/API và email nhận được trong Mailpit.
 
-Nhánh Day 7 được tạo từ nhánh Day 6 để PR chỉ chứa phần cấu hình, vận hành và
-notification của Day 7.
+Nhánh nửa đầu Day 8 được tạo từ nhánh Day 7 để PR chỉ chứa phần review/refactor
+của nửa đầu; phần performance review được giữ cho PR tiếp theo.
