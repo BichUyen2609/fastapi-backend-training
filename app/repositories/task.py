@@ -10,6 +10,9 @@ class TaskRepository(AccessRepository, BaseRepository[Task]):
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session, Task)
 
+    async def get_assignee(self, user_id: int) -> User | None:
+        return await self.session.get(User, user_id)
+
     async def project_exists(self, project_id: int) -> bool:
         return (
             await self.session.scalar(select(exists().where(Project.id == project_id)))

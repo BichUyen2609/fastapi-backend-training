@@ -3,7 +3,7 @@ from typing import Annotated
 from pydantic import AwareDatetime, Field
 
 from app.core.constants import COMMENT_MAX_LENGTH
-from app.schemas.base import BaseSchema, ResourceId
+from app.schemas.base import BaseSchema, Page, ResourceId
 
 
 class CommentCreate(BaseSchema):
@@ -18,8 +18,5 @@ class CommentResponse(BaseSchema):
     created_at: AwareDatetime
 
 
-class CommentPage(BaseSchema):
-    items: list[CommentResponse]
-    total: int
-    page: int
-    limit: int
+class CommentPage(Page[CommentResponse]):
+    pass

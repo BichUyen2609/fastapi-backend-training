@@ -10,7 +10,7 @@ from app.core.constants import (
     TITLE_MIN_LENGTH,
 )
 from app.core.enums import TaskPriority, TaskStatus
-from app.schemas.base import BaseSchema, ResourceId, reject_null
+from app.schemas.base import BaseSchema, Page, ResourceId, reject_null
 
 TaskTitle = Annotated[
     str, Field(min_length=TITLE_MIN_LENGTH, max_length=TITLE_MAX_LENGTH)
@@ -49,11 +49,8 @@ class TaskResponse(TaskCreate):
     updated_at: AwareDatetime
 
 
-class TaskPage(BaseSchema):
-    items: list[TaskResponse]
-    total: int
-    page: int
-    limit: int
+class TaskPage(Page[TaskResponse]):
+    pass
 
 
 class TaskFilters(BaseSchema):

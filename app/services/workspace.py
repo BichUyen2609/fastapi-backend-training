@@ -24,7 +24,7 @@ from app.schemas.workspace import (
     WorkspaceResponse,
     WorkspaceUpdate,
 )
-from app.services.base import ensure_role, transaction
+from app.services.base import authorize_workspace, transaction
 
 
 class WorkspaceService:
@@ -38,11 +38,9 @@ class WorkspaceService:
     async def authorize(
         self, workspace_id: int, minimum: WorkspaceRole
     ) -> WorkspaceAccess:
-        access = await self.repository.workspace_access(workspace_id, self.actor.id)
-        if access is None:
-            raise NotFoundException(WORKSPACE_NOT_FOUND)
-        ensure_role(self.actor, access.role, minimum)
-        return access
+        return await authorize_workspace(
+            self.repository, self.actor, workspace_id, minimum
+        )
 
     async def create_workspace(self, data: WorkspaceCreate) -> Workspace:
         async with transaction(self.repository.session):
