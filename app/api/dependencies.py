@@ -1,7 +1,7 @@
 from collections.abc import AsyncIterator
 from typing import Annotated, cast
 
-from fastapi import Depends, Request
+from fastapi import BackgroundTasks, Depends, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +21,7 @@ from app.repositories.workspace import WorkspaceRepository
 from app.services.auth import AuthService
 from app.services.comment import CommentService
 from app.services.label import LabelService
+from app.services.notification import AssignmentNotifier
 from app.services.project import ProjectService
 from app.services.task import TaskService
 from app.services.user import UserService
@@ -86,8 +87,12 @@ def get_task_service(
     repository: Annotated[TaskRepository, Depends(get_task_repository)],
     user: CurrentUser,
     cache: Annotated[TaskCache, Depends(get_task_cache)],
+    settings: Annotated[Settings, Depends(get_app_settings)],
+    background_tasks: BackgroundTasks,
 ) -> TaskService:
-    return TaskService(repository, user, cache)
+    return TaskService(
+        repository, user, cache, AssignmentNotifier(settings, background_tasks)
+    )
 
 
 def get_workspace_service(

@@ -1,3 +1,4 @@
+from http import HTTPStatus
 from typing import Annotated
 
 from fastapi import Query, status
@@ -15,12 +16,29 @@ ERROR_DESCRIPTIONS: dict[int, str] = {
     status.HTTP_404_NOT_FOUND: "Resource not found",
     status.HTTP_409_CONFLICT: "Data conflict",
     status.HTTP_422_UNPROCESSABLE_CONTENT: "Invalid input or reference",
+    status.HTTP_500_INTERNAL_SERVER_ERROR: "Unexpected server error",
+    status.HTTP_503_SERVICE_UNAVAILABLE: "Database temporarily unavailable",
 }
 
 
 def error_responses(*codes: int) -> dict[int | str, dict[str, object]]:
     return {
-        code: {"model": ErrorResponse, "description": ERROR_DESCRIPTIONS[code]}
+        code: {
+            "model": ErrorResponse,
+            "description": ERROR_DESCRIPTIONS[code],
+            "content": {
+                "application/json": {
+                    "example": {
+                        "detail": ERROR_DESCRIPTIONS[code],
+                        "code": {
+                            422: "VALIDATION_ERROR",
+                            500: "INTERNAL_ERROR",
+                        }.get(code, HTTPStatus(code).name),
+                        "request_id": "example-request-id",
+                    }
+                }
+            },
+        }
         for code in codes
     }
 

@@ -11,6 +11,7 @@ from app.core.constants import (
     REQUEST_ID_HEADER,
     SECURITY_HEADERS,
 )
+from app.core.logging import request_id_context
 
 logger = logging.getLogger("taskhub.access")
 REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9._-]{8,64}")
@@ -35,6 +36,7 @@ class RequestContextMiddleware:
             await self.app(scope, receive, send)
             return
         request_id = resolve_request_id(scope)
+        context_token = request_id_context.set(request_id)
         scope.setdefault("state", {})["request_id"] = request_id
         started = perf_counter()
         status_code = 500
@@ -53,14 +55,17 @@ class RequestContextMiddleware:
         try:
             await self.app(scope, receive, send_with_context)
         finally:
-            logger.info(
-                "request_id=%s method=%s path=%s status=%s duration_ms=%.2f",
-                request_id,
-                scope["method"],
-                scope["path"],
-                status_code,
-                (perf_counter() - started) * MILLISECONDS,
-            )
+            try:
+                logger.info(
+                    "request_id=%s method=%s path=%s status=%s duration_ms=%.2f",
+                    request_id,
+                    scope["method"],
+                    scope["path"],
+                    status_code,
+                    (perf_counter() - started) * MILLISECONDS,
+                )
+            finally:
+                request_id_context.reset(context_token)
 
 
 class SecurityHeadersMiddleware:

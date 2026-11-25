@@ -1,4 +1,4 @@
-# TaskHub — Ngày 6: Redis caching
+# TaskHub — Ngày 7: Configuration, Docker, Logging và Background Tasks
 
 Backend quản lý công việc dùng FastAPI, Pydantic v2, SQLAlchemy 2.x async và
 PostgreSQL 16. Day 3 bổ sung đăng ký, đăng nhập, access token JWT và bảo vệ CRUD
@@ -10,10 +10,45 @@ lỗi tập trung với một định dạng response duy nhất, API Label/Comm
 theo status, priority, assignee.
 Day 6 cache danh sách task theo project bằng Redis 7, giữ nguyên phân quyền và
 tự vô hiệu hóa cache khi dữ liệu thay đổi, kể cả khi Redis tạm mất kết nối.
+Day 7 hoàn thiện cấu hình theo môi trường, log JSON gắn request ID, health check,
+tài liệu OpenAPI và email thông báo assign task chạy nền sau commit. Docker Compose
+chạy app, migration, PostgreSQL, Redis và Mailpit trong cùng stack.
 
 ## Cài đặt và chạy
 
-Yêu cầu Python 3.11+, PostgreSQL 16 và Redis 7. Docker Compose chạy DB và Redis:
+### Docker Compose
+
+Chuẩn bị `.env` lần đầu và tạo khóa JWT:
+
+```powershell
+Copy-Item .env.example .env
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+Thay placeholder `JWT_SECRET` bằng khóa vừa tạo, rồi chạy:
+
+```powershell
+docker compose up -d --build --wait
+docker compose exec app python -m app.seed
+```
+
+App ở <http://127.0.0.1:8000/docs>; xem email local tại
+<http://127.0.0.1:8025>. Mailpit giữ email trong môi trường local, không chuyển tiếp
+ra Internet. Service `migrate` chờ PostgreSQL healthy và chạy Alembic một lần;
+app chỉ bắt đầu khi migration thành công và Redis healthy. API có health check
+`/health/ready`. Khi cập nhật code, chạy lại lệnh `up --build --wait`.
+
+Dockerfile gồm hai stage: build wheel và runtime Python 3.12. Image runtime chạy
+user `taskhub` UID 10001; Compose đặt filesystem app chỉ đọc, `/tmp` là tmpfs và
+chặn nâng quyền. `.dockerignore` loại `.env`, Git, test, cache và virtualenv khỏi
+build context. Không build credential vào image. Các cổng chỉ bind loopback.
+Compose dựng URL DB nội bộ từ `POSTGRES_USER/PASSWORD/DB`; mật khẩu local nên dùng
+ký tự an toàn trong URL. Khi thay mật khẩu DB đã khởi tạo, cập nhật cả PostgreSQL
+và cấu hình kết nối tương ứng.
+
+### Chạy app local
+
+Yêu cầu Python 3.11+, PostgreSQL 16 và Redis 7:
 
 ```powershell
 python -m venv .venv
@@ -31,14 +66,15 @@ docker compose exec db createdb -U taskhub taskhub_test
 .\.venv\Scripts\python.exe -m alembic upgrade head
 .\.venv\Scripts\python.exe -m alembic check
 .\.venv\Scripts\python.exe -m app.seed
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --no-access-log
 ```
 
 Chỉ cần tạo `taskhub_test` một lần. Nếu dùng PostgreSQL đã cài sẵn, tạo hai DB riêng
 `taskhub` và `taskhub_test`, rồi cập nhật hai URL trong `.env`. Trên Linux/macOS,
 thay `.\.venv\Scripts\python.exe` bằng `.venv/bin/python`.
-Nếu cập nhật từ Day 5, cài lại dependency, thêm các biến Redis từ `.env.example`,
-khởi động Redis rồi chạy `alembic upgrade head` trước khi khởi động API.
+Khi cập nhật từ ngày trước, giữ `.env` hiện tại, bổ sung các biến mới từ
+`.env.example`, cài lại dependency và chạy `alembic upgrade head`. Để nhận email
+local, chạy `docker compose up -d mailpit`; `SMTP_HOST=127.0.0.1`, `SMTP_PORT=1025`.
 
 - Swagger UI: <http://127.0.0.1:8000/docs>
 - ReDoc: <http://127.0.0.1:8000/redoc>
@@ -82,6 +118,7 @@ app/
 │   ├── constants.py
 │   ├── enums.py
 │   ├── errors.py
+│   ├── logging.py
 │   ├── exceptions.py
 │   ├── middleware.py
 │   └── security.py
@@ -110,6 +147,7 @@ app/
     ├── workspace.py
     ├── project.py
     ├── task.py
+    ├── notification.py
     ├── label.py
     └── comment.py
 migrations/
@@ -132,6 +170,65 @@ xác thực user và thao tác Task dùng chung session; service commit transact
 Lifespan kiểm tra kết nối và đóng engine khi ứng dụng dừng. Không tự tạo bảng khi
 startup; schema được quản lý bằng Alembic. Router, service và repository đều
 `async`/`await`; ORM model được tách khỏi các schema request/response.
+
+## Cấu hình và vận hành (Day 7)
+
+`get_settings()` đọc `ENVIRONMENT` từ process hoặc `.env`, chọn một trong
+`development`, `testing`, `production`, rồi nạp `.env` và `.env.<environment>`.
+Thứ tự ưu tiên: biến process → file môi trường → `.env` → mặc định. Các file
+`.env.*` được Git ignore, giữ riêng `.env.example` làm mẫu. Settings được cache;
+khởi động lại process sau khi đổi cấu hình.
+
+| Biến | Giá trị mẫu | Ý nghĩa |
+| --- | --- | --- |
+| `ENVIRONMENT` | `development` | Chọn file cấu hình môi trường |
+| `DOCS_ENABLED` | `true` | Bật/tắt đồng thời Swagger, ReDoc và OpenAPI |
+| `LOG_LEVEL` | `INFO` | DEBUG/INFO/WARNING/ERROR/CRITICAL |
+| `LOG_FORMAT` | `json` | JSON hoặc text, ghi ra stdout |
+| `NOTIFICATIONS_ENABLED` | `true` | Bật email khi assign task |
+| `SMTP_HOST` / `SMTP_PORT` | `127.0.0.1` / `1025` | SMTP cho app chạy local |
+| `DOCKER_SMTP_HOST` / `DOCKER_SMTP_PORT` | `mailpit` / `1025` | SMTP trong Compose |
+| `SMTP_SENDER` | `notifications@example.com` | Địa chỉ gửi |
+| `SMTP_SECURITY` | `none` | none/starttls/ssl |
+| `SMTP_USERNAME` / `SMTP_PASSWORD` | để trống | Khai báo cùng nhau khi SMTP cần auth |
+| `SMTP_TIMEOUT_SECONDS` | `5` | Timeout SMTP, tối đa 30 giây |
+
+Bật notification mà thiếu host/sender, khai báo credential không đủ cặp, enum
+cấu hình sai hoặc timeout không hợp lệ đều bị từ chối. Production bắt buộc
+`DATABASE_ECHO=false`, CORS không wildcard và SMTP có STARTTLS/SSL khi bật email.
+TLS kiểm tra certificate bằng trust store hệ thống. Khóa JWT vẫn được kiểm tra
+trước khi API mở kết nối DB. Không dùng credential thật trong file mẫu.
+
+Logger `taskhub` và `uvicorn.error` dùng cùng formatter. JSON có timestamp UTC,
+level, logger, request_id và message. ContextVar giữ request ID riêng cho từng
+request, truyền sang background thread và được reset khi request kết thúc. Log
+lỗi 500 vẫn có request ID sau khi middleware reset context. Stack trace chỉ ghi
+vị trí file/hàm và loại lỗi, bỏ giá trị exception, source code và biến local.
+Access log không ghi query string, header hoặc body; Uvicorn access log được tắt
+trong Docker để dùng một luồng access log của app.
+
+`/health/live` là probe public kiểm tra process. `/health/ready` kiểm tra DB và
+trả 503 theo định dạng lỗi chung nếu DB hỏng. Redis là cache tùy chọn: readiness
+vẫn trả 200 và `cache=unavailable` khi Redis mất kết nối, để API tiếp tục dùng DB.
+Response không chứa URL hay credential.
+
+Swagger/ReDoc nhóm endpoint theo resource, giữ OAuth2 Bearer scheme và mô tả
+response lỗi chung 422/500/503, cùng lỗi nghiệp vụ từng endpoint. Có response mẫu
+gồm `detail`, `code`, `request_id`; Swagger không lưu token sau khi reload trang.
+
+## Email assign task
+
+Tạo task có assignee hoặc PATCH đổi sang assignee khác sẽ lên lịch email sau khi
+commit thành công. PATCH giữ nguyên assignee, sửa field khác, bỏ assign, request
+bị từ chối và transaction rollback đều không tạo email. Mỗi job chỉ giữ snapshot
+immutable gồm ID, title, recipient và tên người assign; không giữ ORM object hay
+session của request.
+
+FastAPI BackgroundTasks chạy SMTP trong thread pool sau khi gửi response. Lỗi
+SMTP ghi warning với task ID và loại lỗi, không log địa chỉ/email body/password,
+không rollback task đã commit. BackgroundTasks chạy cùng process, chưa có hàng
+đợi bền vững hoặc retry tự động: email có thể mất nếu process dừng. Mailpit local
+cho phép kiểm tra email thật mà không gửi ra ngoài.
 
 ## Model và migration
 
@@ -452,8 +549,12 @@ test bằng SCAN, không FLUSHDB và không dùng Redis DB dev. Kiểm tra cache
 qua truy vấn task, TTL, key theo filter/page/project, create/update/delete/move,
 rollback, thay đổi assignee từ membership/FK, phân quyền trên cache nóng, payload
 hỏng, cache fill muộn và ghi dữ liệu khi Redis lỗi.
+Test Day 7 kiểm tra thứ tự ưu tiên cấu hình, fail-fast, SMTP/TLS/auth, email thật
+qua SMTP test server, thời điểm sau commit, thread pool/request ID, lỗi SMTP,
+rollback, health check, OpenAPI và logging không phản chiếu giá trị exception.
 CI chạy PostgreSQL 16, Redis 7, Alembic upgrade/check, Ruff, mypy strict và pytest
-trên Python 3.11/3.12.
+trên Python 3.11/3.12. Job container build image thật, chạy toàn stack từ Compose,
+kiểm tra migration, UID, health/docs/API và email nhận được trong Mailpit.
 
-Nhánh Day 6 được tạo từ nhánh Day 5. Background task và Docker cho app được giữ
-cho session tiếp theo.
+Nhánh Day 7 được tạo từ nhánh Day 6 để PR chỉ chứa phần cấu hình, vận hành và
+notification của Day 7.
